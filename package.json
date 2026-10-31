@@ -1,0 +1,15 @@
+{
+  "name": "opentrading",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TradingView-style charts on Cloudflare Workers, powered by Binance market data",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "echo \"no build step: public/ is served as static assets\""
+  },
+  "devDependencies": {
+    "wrangler": "^4.156.0"
+  }
+}

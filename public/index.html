@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenTrading — графики и идеи</title>
+    <meta
+      name="description"
+      content="Графики в стиле TradingView на Cloudflare Workers: свечи, индикаторы, список наблюдения и живые данные Binance."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/vendor/lightweight-charts.js" defer></script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <button
+          class="icon-btn only-mobile"
+          id="sidebarToggle"
+          type="button"
+          aria-label="Открыть список наблюдения"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+
+        <a class="brand" href="/" aria-label="OpenTrading">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">Open<b>Trading</b></span>
+        </a>
+
+        <button class="symbol-btn" id="symbolBtn" type="button" aria-haspopup="dialog">
+          <span class="symbol-name" id="symbolName">BTC / USDT</span>
+          <span class="symbol-meta" id="symbolMeta">Binance · спот</span>
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+
+        <nav class="tf-group" id="tfGroup" aria-label="Таймфрейм">
+          <button type="button" data-tf="1m">1м</button>
+          <button type="button" data-tf="5m">5м</button>
+          <button type="button" data-tf="15m">15м</button>
+          <button type="button" data-tf="1h">1ч</button>
+          <button type="button" data-tf="4h">4ч</button>
+          <button type="button" data-tf="1d">1д</button>
+          <button type="button" data-tf="1w">1н</button>
+        </nav>
+
+        <div class="spacer"></div>
+
+        <button class="btn" id="indicatorsBtn" type="button" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 18 9 9l4 5 3-8 4 12" />
+          </svg>
+          <span>Индикаторы</span>
+        </button>
+
+        <button class="icon-btn" id="themeBtn" type="button" aria-label="Сменить тему">
+          <span id="themeIcon">☀</span>
+        </button>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar" id="sidebar">
+          <div class="sidebar-head">
+            <h2>Список наблюдения</h2>
+            <button
+              class="icon-btn small"
+              id="addSymbolBtn"
+              type="button"
+              aria-label="Добавить символ"
+            >
+              +
+            </button>
+          </div>
+          <div class="watchlist" id="watchlist"></div>
+          <div class="sidebar-foot">
+            <span>Данные Binance · обновление ~1с</span>
+            <span class="foot-note">D1: необязательно</span>
+          </div>
+        </aside>
+
+        <main class="chart-pane">
+          <div class="chart-head">
+            <div class="instrument">
+              <span class="instrument-symbol" id="chartSymbol">BTCUSDT</span>
+              <span class="instrument-tf" id="chartTf">1м</span>
+              <span class="source-badge" id="sourceBadge">BINANCE</span>
+            </div>
+            <div class="ohlc" id="ohlc"></div>
+          </div>
+
+          <div class="chart-host" id="chartHost">
+            <div class="chart" id="chart"></div>
+
+            <div class="chart-loading" id="chartLoading">
+              <div class="spinner" aria-hidden="true"></div>
+              <span>Загрузка графика…</span>
+            </div>
+
+            <div class="chart-error hidden" id="chartError">
+              <p id="chartErrorText">Не удалось загрузить данные.</p>
+              <button class="btn primary" id="retryBtn" type="button">Повторить</button>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <footer class="statusbar">
+        <span class="conn"><i id="connDot" class="dot"></i><span id="connLabel">Подключение…</span></span>
+        <span id="statusSymbol">BTCUSDT · 1м</span>
+        <span id="statusSource">источник: —</span>
+        <span class="spacer"></span>
+        <span id="clock">--:--:-- UTC</span>
+      </footer>
+    </div>
+
+    <div class="modal hidden" id="searchModal" role="dialog" aria-modal="true" aria-label="Поиск символа">
+      <div class="modal-backdrop" data-close="search"></div>
+      <div class="modal-card search-card">
+        <div class="search-input-wrap">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <input
+            id="searchInput"
+            type="text"
+            placeholder="Поиск: BTC, ETH, SOL…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <kbd>Esc</kbd>
+        </div>
+        <div class="search-results" id="searchResults"></div>
+      </div>
+    </div>
+
+    <div
+      class="modal hidden"
+      id="indicatorsModal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Индикаторы"
+    >
+      <div class="modal-backdrop" data-close="indicators"></div>
+      <div class="modal-card indicators-card">
+        <h3>Индикаторы</h3>
+        <p class="hint">Отмечай нужные — график перестроится сразу.</p>
+        <div class="ind-list" id="indList"></div>
+        <button class="btn primary wide" id="closeIndicators" type="button">Готово</button>
+      </div>
+    </div>
+
+    <div class="toast hidden" id="toast"></div>
+  </body>
+</html>
