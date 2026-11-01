@@ -277,10 +277,11 @@ export async function getHistory(symbol, interval, limit) {
 
 function mapTicker(row, provider) {
   const scale = (provider && provider.percentScale) || 1;
+  const change = Number(row.priceChangePercent) * scale;
 
   return {
     price: Number(row.lastPrice),
-    changePct: Number(row.priceChangePercent) * scale,
+    changePct: Number.isFinite(change) ? Math.round(change * 10000) / 10000 : 0,
     high: Number(row.highPrice),
     low: Number(row.lowPrice),
     volume: Number(row.quoteVolume),

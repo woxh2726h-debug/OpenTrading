@@ -138,7 +138,12 @@ export function searchSymbols(symbols, query, limit) {
     else if (item.base.startsWith(normalized)) score = 2;
     else if (item.symbol.includes(normalized) || item.base.includes(normalized)) score = 3;
 
-    if (score >= 0) matches.push({ score, item });
+    if (score >= 0) {
+      // Well-known pairs (BTCUSDT, ETHUSDT, ...) should outrank obscure ones
+      // that merely share a prefix, e.g. BTCBAMUSDT.
+      if (POPULAR_INDEX.has(item.symbol)) score -= 0.5;
+      matches.push({ score, item });
+    }
   }
 
   matches.sort(
