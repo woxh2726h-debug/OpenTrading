@@ -622,7 +622,7 @@ function connectStream() {
   disconnectStream();
   if (!state.candles.length) return;
 
-  if (state.source !== "binance") {
+  if (!isBinanceSource(state.source)) {
     startPolling();
     return;
   }
@@ -680,11 +680,11 @@ function connectStream() {
 }
 
 function scheduleReconnect(delay) {
-  if (state.reconnectTimer || state.source !== "binance") return;
+  if (state.reconnectTimer || !isBinanceSource(state.source)) return;
 
   state.reconnectTimer = window.setTimeout(() => {
     state.reconnectTimer = null;
-    if (!state.ws && state.source === "binance") connectStream();
+    if (!state.ws && isBinanceSource(state.source)) connectStream();
   }, delay);
 }
 
@@ -708,7 +708,7 @@ function disconnectStream() {
 }
 
 function startPolling() {
-  setConn(state.source === "binance" ? "polling" : "synthetic");
+  setConn(state.source === "synthetic" ? "synthetic" : "polling");
   if (state.pollTimer) return;
   state.pollTimer = window.setInterval(pollTick, 5000);
   pollTick();
@@ -1150,12 +1150,43 @@ function setConn(status) {
   el.connDot.className = `dot ${dot}`;
 }
 
-function updateSourceBadge() {
-  const binance = state.source === "binance";
+const SOURCE_LABELS = {
+  binance: "BINANCE",
+  "binance-vision": "BINANCE",
+  "binance-api1": "BINANCE",
+  "binance-api2": "BINANCE",
+  "binance-us": "BINANCE US",
+  mexc: "MEXC",
+  mixed: "MIXED",
+  synthetic: "SYNTHETIC",
+};
 
-  el.sourceBadge.textContent = binance ? "BINANCE" : "SYNTHETIC";
-  el.sourceBadge.classList.toggle("synthetic", !binance);
-  el.statusSource.textContent = `источник: ${binance ? "Binance" : "синтетика (fallback)"}`;
+function isBinanceSource(source) {
+  return typeof source === "string" && source.startsWith("binance");
+}
+
+function sourceLabel(source) {
+  return SOURCE_LABELS[source] || String(source || "").toUpperCase() || "—";
+}
+
+function updateSourceBadge() {
+  const synthetic = state.source === "synthetic" || state.source === "mixed";
+
+  el.sourceBadge.textContent = sourceLabel(state.source);
+  el.sourceBadge.classList.toggle("synthetic", synthetic);
+  el.statusSource.textContent =
+    state.source === "synthetic"
+      ? "источник: синтетика (fallback)"
+      : state.source === "mixed"
+        ? "источник: часть символов синтетическая"
+        : `источник: ${sourceLabel(state.source)}`;
+
+  el.symbolMeta.textContent =
+    state.source === "synthetic"
+      ? "демо-данные"
+      : state.source === "mixed"
+        ? "смешанный источник"
+        : `${sourceLabel(state.source)} · спот`;
 }
 
 function updateClock() {

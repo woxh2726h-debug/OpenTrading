@@ -1,33 +1,80 @@
-const CACHE_ORIGIN = "https://cache.opentrading.internal/v2";
+const CACHE_ORIGIN = "https://cache.opentrading.internal/v3";
 
 /*
- * Binance rejects requests from some Cloudflare edge locations.
- * data-api.binance.vision is the official public market-data front door and is
- * reachable from more places, so every REST call walks this list until one host
- * answers. Dead hosts are skipped for HOST_COOLDOWN_MS to keep latency low.
+ * Binance rejects requests from some Cloudflare edge locations (403 from
+ * Stockholm, for example), so every upstream call walks this list of
+ * Binance-compatible providers until one answers. Providers that just failed
+ * are skipped for COOLDOWN_MS, which keeps follow-up requests fast.
+ *
+ * MEXC is not Binance, but its /api/v3/* responses are compatible: the same
+ * kline arrays, the same 24h ticker fields and the same exchangeInfo layout.
+ * Two details differ and are handled below: MEXC spells the hourly and weekly
+ * intervals "60m"/"1W", and it ignores the `symbols` batch parameter.
  */
-const BINANCE_HOSTS = [
-  "https://api.binance.com",
-  "https://data-api.binance.vision",
-  "https://api1.binance.com",
-  "https://api2.binance.com",
+const PROVIDERS = [
+  {
+    id: "binance",
+    label: "Binance",
+    base: "https://api.binance.com",
+    batchTickers: true,
+    klineInterval: (interval) => interval,
+  },
+  {
+    id: "binance-vision",
+    label: "Binance",
+    base: "https://data-api.binance.vision",
+    batchTickers: true,
+    klineInterval: (interval) => interval,
+  },
+  {
+    id: "binance-api1",
+    label: "Binance",
+    base: "https://api1.binance.com",
+    batchTickers: true,
+    klineInterval: (interval) => interval,
+  },
+  {
+    id: "binance-api2",
+    label: "Binance",
+    base: "https://api2.binance.com",
+    batchTickers: true,
+    klineInterval: (interval) => interval,
+  },
+  {
+    id: "mexc",
+    label: "MEXC",
+    base: "https://api.mexc.com",
+    batchTickers: false,
+    // MEXC reports the 24h change as a fraction (0.005 = 0.5%), Binance as a percentage.
+    percentScale: 100,
+    klineInterval: (interval) =>
+      interval === "1h" ? "60m" : interval === "1w" ? "1W" : interval,
+  },
+  {
+    id: "binance-us",
+    label: "Binance US",
+    base: "https://api.binance.us",
+    batchTickers: true,
+    klineInterval: (interval) => interval,
+  },
 ];
 
-const HOST_COOLDOWN_MS = 10 * 60 * 1000;
-const hostState = BINANCE_HOSTS.map(() => ({ downUntil: 0 }));
-let preferredHost = 0;
+const COOLDOWN_MS = 10 * 60 * 1000;
+const providerState = PROVIDERS.map(() => ({ downUntil: 0 }));
+let preferredProvider = 0;
 
-function hostOrder() {
+function providerOrder() {
   const now = Date.now();
   const alive = [];
   const cooling = [];
 
-  for (let i = 0; i < BINANCE_HOSTS.length; i++) {
-    const index = (preferredHost + i) % BINANCE_HOSTS.length;
-    if (hostState[index].downUntil > now) cooling.push(index);
+  for (let i = 0; i < PROVIDERS.length; i++) {
+    const index = (preferredProvider + i) % PROVIDERS.length;
+    if (providerState[index].downUntil > now) cooling.push(index);
     else alive.push(index);
   }
 
+  // If everything is cooling down, still try: the block may have lifted.
   return alive.concat(cooling);
 }
 
@@ -123,46 +170,57 @@ async function cachedJson(key, ttlSeconds, producer) {
 
 export { cachedJson };
 
-export async function binanceFetch(path, options = {}) {
-  const timeout = options.timeout || 4500;
-  let lastError = null;
+export function upstreamJson(provider, path, timeout) {
+  return fetch(`${provider.base}${path}`, {
+    headers: {
+      accept: "application/json",
+      "user-agent": "OpenTrading/1.0",
+    },
+    signal: AbortSignal.timeout(timeout),
+  }).then(async (response) => {
+    if (!response.ok) {
+      const error = new Error(`upstream_http_${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return response.json();
+  });
+}
 
-  for (const index of hostOrder()) {
-    const host = BINANCE_HOSTS[index];
+/*
+ * Runs `task(provider, timeout)` against providers in preference order.
+ * Resolves with { data, provider } for the first provider that answers.
+ */
+export async function resolveUpstream(task, options = {}) {
+  const timeout = options.timeout || 4500;
+  let unreachableError = null;
+  let requestError = null;
+
+  for (const index of providerOrder()) {
+    const provider = PROVIDERS[index];
 
     try {
-      const response = await fetch(`${host}${path}`, {
-        headers: {
-          accept: "application/json",
-          "user-agent": "OpenTrading/1.0",
-        },
-        signal: AbortSignal.timeout(timeout),
-      });
-
-      if (!response.ok) {
-        const error = new Error(`binance_http_${response.status}`);
-        error.status = response.status;
-        throw error;
-      }
-
-      const data = await response.json();
-      preferredHost = index;
-      hostState[index].downUntil = 0;
-      return data;
+      const data = await task(provider, timeout);
+      preferredProvider = index;
+      providerState[index].downUntil = 0;
+      return { data, provider };
     } catch (error) {
-      // A 4xx that is not a regional block or rate limit means the host is up
-      // and the request itself was wrong: fail fast instead of failing over.
       const status = error && error.status;
-      if (status && status < 500 && status !== 403 && status !== 418 && status !== 429 && status !== 451) {
-        throw error;
+      const blocked = !status || status >= 500 || [403, 418, 429, 451].includes(status);
+
+      // The provider answered, it just does not know this symbol: try the next
+      // one without punishing it, and remember the error for the client.
+      if (!blocked) {
+        requestError = requestError || error;
+        continue;
       }
 
-      lastError = error;
-      hostState[index].downUntil = Date.now() + HOST_COOLDOWN_MS;
+      unreachableError = error;
+      providerState[index].downUntil = Date.now() + COOLDOWN_MS;
     }
   }
 
-  throw lastError || new Error("binance_unreachable");
+  throw requestError || unreachableError || new Error("upstream_unreachable");
 }
 
 function toCandle(row) {
@@ -176,21 +234,36 @@ function toCandle(row) {
   };
 }
 
+function isCandle(candle) {
+  return (
+    Number.isFinite(candle.time) &&
+    Number.isFinite(candle.open) &&
+    Number.isFinite(candle.high) &&
+    Number.isFinite(candle.low) &&
+    Number.isFinite(candle.close) &&
+    candle.close > 0
+  );
+}
+
 export async function getHistory(symbol, interval, limit) {
   const ttl = interval === "1m" ? 5 : interval === "5m" ? 15 : 60;
 
   return cachedJson(`${CACHE_ORIGIN}/history/${symbol}/${interval}/${limit}`, ttl, async () => {
     try {
-      const rows = await binanceFetch(
-        `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+      const { data: rows, provider } = await resolveUpstream((upstream, timeout) =>
+        upstreamJson(
+          upstream,
+          `/api/v3/klines?symbol=${symbol}&interval=${upstream.klineInterval(interval)}&limit=${limit}`,
+          timeout,
+        ),
       );
-      const candles = rows
-        .map(toCandle)
-        .filter((candle) => Number.isFinite(candle.close) && candle.close > 0);
 
+      if (!Array.isArray(rows)) throw new Error("bad_klines");
+
+      const candles = rows.map(toCandle).filter(isCandle);
       if (candles.length < 2) throw new Error("empty_history");
 
-      return { symbol, interval, source: "binance", candles };
+      return { symbol, interval, source: provider.id, candles };
     } catch {
       return {
         symbol,
@@ -202,10 +275,12 @@ export async function getHistory(symbol, interval, limit) {
   });
 }
 
-function mapTicker(row) {
+function mapTicker(row, provider) {
+  const scale = (provider && provider.percentScale) || 1;
+
   return {
     price: Number(row.lastPrice),
-    changePct: Number(row.priceChangePercent),
+    changePct: Number(row.priceChangePercent) * scale,
     high: Number(row.highPrice),
     low: Number(row.lowPrice),
     volume: Number(row.quoteVolume),
@@ -215,12 +290,22 @@ function mapTicker(row) {
 export async function getTicker(symbol) {
   return cachedJson(`${CACHE_ORIGIN}/ticker/${symbol}`, 5, async () => {
     try {
-      const row = await binanceFetch(`/api/v3/ticker/24hr?symbol=${symbol}`);
-      return { symbol, source: "binance", ...mapTicker(row) };
+      const { data: row, provider } = await resolveUpstream((upstream, timeout) =>
+        upstreamJson(upstream, `/api/v3/ticker/24hr?symbol=${symbol}`, timeout),
+      );
+
+      if (!row || !Number.isFinite(Number(row.lastPrice))) throw new Error("bad_ticker");
+      return { symbol, source: provider.id, ...mapTicker(row, provider) };
     } catch {
       return { symbol, source: "synthetic", ...syntheticTicker(symbol) };
     }
   });
+}
+
+function allTickers(provider, timeout) {
+  return cachedJson(`${CACHE_ORIGIN}/all-tickers/${provider.id}`, 8, () =>
+    upstreamJson(provider, "/api/v3/ticker/24hr", timeout),
+  );
 }
 
 export async function getTickers(symbols) {
@@ -228,19 +313,30 @@ export async function getTickers(symbols) {
 
   return cachedJson(`${CACHE_ORIGIN}/tickers/${key}`, 10, async () => {
     try {
-      const query = encodeURIComponent(JSON.stringify(symbols));
-      const rows = await binanceFetch(`/api/v3/ticker/24hr?symbols=${query}`);
+      const { data: rows, provider } = await resolveUpstream(async (upstream, timeout) => {
+        if (upstream.batchTickers) {
+          const query = encodeURIComponent(JSON.stringify(symbols));
+          return upstreamJson(upstream, `/api/v3/ticker/24hr?symbols=${query}`, timeout);
+        }
+
+        const all = await allTickers(upstream, timeout);
+        const wanted = new Set(symbols);
+        return all.filter((row) => row && wanted.has(row.symbol));
+      });
+
+      if (!Array.isArray(rows)) throw new Error("bad_tickers");
+
       const bySymbol = new Map(rows.map((row) => [row.symbol, row]));
 
       const tickers = symbols.map((symbol) => {
         const row = bySymbol.get(symbol);
-        return row
-          ? { symbol, source: "binance", ...mapTicker(row) }
+        return row && Number.isFinite(Number(row.lastPrice))
+          ? { symbol, source: provider.id, ...mapTicker(row, provider) }
           : { symbol, source: "synthetic", ...syntheticTicker(symbol) };
       });
 
-      const allBinance = tickers.every((ticker) => ticker.source === "binance");
-      return { tickers, source: allBinance ? "binance" : "mixed" };
+      const allSame = tickers.every((ticker) => ticker.source === provider.id);
+      return { tickers, source: allSame ? provider.id : "mixed" };
     } catch {
       return {
         tickers: symbols.map((symbol) => ({
@@ -256,9 +352,9 @@ export async function getTickers(symbols) {
 
 /* --------------------------------------------------------------------------
  * Deterministic synthetic fallback.
- * Used when Binance is unreachable (region blocks, rate limits, outages).
- * Prices are a smooth function of time, so refetching the same candle always
- * returns the same value and the chart never "jumps".
+ * Used when every provider is unreachable (region blocks, rate limits,
+ * outages). Prices are a smooth function of time, so refetching the same
+ * candle always returns the same value and the chart never "jumps".
  * ------------------------------------------------------------------------ */
 
 function hash(text) {

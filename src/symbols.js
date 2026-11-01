@@ -1,6 +1,6 @@
-import { binanceFetch, cachedJson } from "./market.js";
+import { cachedJson, resolveUpstream, upstreamJson } from "./market.js";
 
-const CACHE_KEY = "https://cache.opentrading.internal/v2/symbols";
+const CACHE_KEY = "https://cache.opentrading.internal/v3/symbols";
 
 const POPULAR = [
   "BTCUSDT",
@@ -56,6 +56,9 @@ const FALLBACK_SYMBOLS = POPULAR.map((symbol) => ({
   quote: "USDT",
 }));
 
+// Binance says "TRADING", MEXC says "1": both mean the market is live.
+const ONLINE_STATUSES = new Set(["TRADING", "1", "ENABLED", "ONLINE"]);
+
 function toInfo(symbol, base, quote) {
   return { symbol, base, quote };
 }
@@ -69,8 +72,23 @@ function sortSymbols(list) {
   });
 }
 
+function isUsable(item) {
+  if (!item) return false;
+  if (!ONLINE_STATUSES.has(String(item.status || "").toUpperCase())) return false;
+  if (item.isSpotTradingAllowed === false) return false;
+  if (String(item.quoteAsset || "").toUpperCase() !== "USDT") return false;
+
+  const base = String(item.baseAsset || "");
+  if (!base || STABLES.has(base)) return false;
+  if (/(UP|DOWN|BULL|BEAR)$/.test(base)) return false;
+
+  return /^[A-Z0-9]{2,12}USDT$/.test(String(item.symbol || ""));
+}
+
 async function fetchExchangeInfo() {
-  const data = await binanceFetch("/api/v3/exchangeInfo", { timeout: 8000 });
+  const { data, provider } = await resolveUpstream((upstream, timeout) =>
+    upstreamJson(upstream, "/api/v3/exchangeInfo", Math.max(timeout, 8000)),
+  );
 
   if (!data || !Array.isArray(data.symbols)) throw new Error("bad_exchange_info");
 
@@ -78,30 +96,24 @@ async function fetchExchangeInfo() {
   const list = [];
 
   for (const item of data.symbols) {
-    if (!item || item.status !== "TRADING") continue;
-    if (item.quoteAsset !== "USDT") continue;
-    if (item.isSpotTradingAllowed === false) continue;
+    if (!isUsable(item)) continue;
 
-    const base = String(item.baseAsset || "");
-    if (!base || STABLES.has(base)) continue;
-    if (/(UP|DOWN|BULL|BEAR)$/.test(base)) continue;
-
-    const symbol = String(item.symbol || "");
+    const symbol = String(item.symbol);
     if (seen.has(symbol)) continue;
 
     seen.add(symbol);
-    list.push(toInfo(symbol, base, "USDT"));
+    list.push(toInfo(symbol, String(item.baseAsset), "USDT"));
   }
 
   if (list.length < 10) throw new Error("too_few_symbols");
-  return list;
+  return { symbols: list, provider: provider.id };
 }
 
 export async function getSymbolList() {
   return cachedJson(CACHE_KEY, 3600, async () => {
     try {
-      const symbols = sortSymbols(await fetchExchangeInfo());
-      return { symbols, source: "binance" };
+      const { symbols, provider } = await fetchExchangeInfo();
+      return { symbols: sortSymbols(symbols), source: provider };
     } catch {
       return { symbols: FALLBACK_SYMBOLS.slice(), source: "fallback" };
     }
