@@ -595,6 +595,31 @@ svg {
   letter-spacing: 0.03em;
 }
 
+#clock {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+#clock:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+#clock:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+#clock[data-zone="utc"] {
+  color: var(--text-dim);
+}
+
 .dot {
   width: 7px;
   height: 7px;

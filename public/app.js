@@ -32,6 +32,7 @@ const state = {
   symbol: "BTCUSDT",
   interval: "1m",
   theme: "dark",
+  timezone: "local",
   candles: [],
   candleByTime: new Map(),
   indicators: {
@@ -173,6 +174,9 @@ function loadSettings() {
     if (saved.theme === "light" || saved.theme === "dark") {
       state.theme = saved.theme;
     }
+    if (saved.timezone === "local" || saved.timezone === "utc") {
+      state.timezone = saved.timezone;
+    }
   }
 
   const savedList = store.get(WATCHLIST_KEY, null);
@@ -193,6 +197,7 @@ function saveSettings() {
     symbol: state.symbol,
     interval: state.interval,
     theme: state.theme,
+    timezone: state.timezone,
     indicators: state.indicators,
   });
 }
@@ -228,9 +233,9 @@ function precisionFor(price) {
   return 6;
 }
 
-function toCandleData(candle) {
+function toCandleData(candle, time = chartTime(candle.time)) {
   return {
-    time: candle.time,
+    time,
     open: candle.open,
     high: candle.high,
     low: candle.low,
@@ -251,6 +256,182 @@ function normalizeCandle(candle) {
 
 function lastCandle() {
   return state.candles.length ? state.candles[state.candles.length - 1] : null;
+}
+
+/* -------------------------------------------------------------- timezone */
+
+const INTRADAY_INTERVALS = new Set(["1m", "5m", "15m", "1h", "4h"]);
+
+// The zone the operating system reports: the same one behind the taskbar clock.
+const LOCAL_TIME_ZONE = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+})();
+
+const zoneFormatters = new Map();
+
+function zoneFormatter(zone, options) {
+  const key = `${zone}\u0000${JSON.stringify(options)}`;
+  let formatter = zoneFormatters.get(key);
+
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("ru-RU", { ...options, timeZone: zone });
+    zoneFormatters.set(key, formatter);
+  }
+
+  return formatter;
+}
+
+function formatInZone(zone, date, options) {
+  try {
+    return zoneFormatter(zone, options).format(date);
+  } catch {
+    return date.toISOString().slice(11, 19);
+  }
+}
+
+// Minutes east of UTC for `zone` at `date`, DST included.
+function zoneOffsetMinutes(zone, date) {
+  if (zone === "UTC") return 0;
+
+  try {
+    const parts = zoneFormatter(zone, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(date);
+
+    const pick = (type) => Number(parts.find((part) => part.type === type)?.value);
+    const wallClock = Date.UTC(
+      pick("year"),
+      pick("month") - 1,
+      pick("day"),
+      pick("hour"),
+      pick("minute"),
+      pick("second"),
+    );
+
+    return Math.round((wallClock - Math.floor(date.getTime() / 1000) * 1000) / 60000);
+  } catch {
+    return 0;
+  }
+}
+
+function zoneOffsetLabel(zone, date) {
+  const minutes = zoneOffsetMinutes(zone, date);
+  const sign = minutes < 0 ? "-" : "+";
+  const absolute = Math.abs(minutes);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
+  const rest = String(absolute % 60).padStart(2, "0");
+
+  return `UTC${sign}${hours}:${rest}`;
+}
+
+function activeTimeZone() {
+  return state.timezone === "utc" ? "UTC" : LOCAL_TIME_ZONE;
+}
+
+function isIntradayInterval(interval = state.interval) {
+  return INTRADAY_INTERVALS.has(interval);
+}
+
+// Intraday candles are shown in the chosen zone; daily and weekly candles keep
+// their UTC dates so a bar keeps the business day its exchange assigned to it.
+function usesLocalTime() {
+  return state.timezone !== "utc" && isIntradayInterval();
+}
+
+const offsetCache = new Map();
+
+// Offset of the system zone at `timeSeconds`, cached per hour (DST aware).
+function localOffsetSeconds(timeSeconds) {
+  const bucket = Math.floor(timeSeconds / 3600);
+  let offset = offsetCache.get(bucket);
+
+  if (offset === undefined) {
+    offset = zoneOffsetMinutes(LOCAL_TIME_ZONE, new Date(bucket * 3600 * 1000)) * 60;
+    if (offsetCache.size > 2048) offsetCache.clear();
+    offsetCache.set(bucket, offset);
+  }
+
+  return offset;
+}
+
+/*
+ * lightweight-charts only ever speaks UTC, so local display is done by shifting
+ * intraday timestamps by the zone offset. A candle keeps its real identity in
+ * `state.candles`; only the value handed to the chart changes, which makes the
+ * chart's "midnight" the user's midnight and keeps tick marks aligned.
+ */
+function chartTime(timeSeconds) {
+  return usesLocalTime() ? timeSeconds + localOffsetSeconds(timeSeconds) : timeSeconds;
+}
+
+// Same mapping for a whole ascending series. When DST falls back, one wall-clock
+// hour repeats, so duplicates are nudged by a second to keep times ascending.
+function chartTimes(candles) {
+  const times = new Array(candles.length);
+  let previous = -Infinity;
+
+  for (let i = 0; i < candles.length; i++) {
+    let time = chartTime(candles[i].time);
+    if (time <= previous) time = previous + 1;
+    times[i] = time;
+    previous = time;
+  }
+
+  return times;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function utcClock(date, withSeconds = false) {
+  const base = `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
+  return withSeconds ? `${base}:${pad2(date.getUTCSeconds())}` : base;
+}
+
+function utcDate(date, shortYear = false) {
+  const year = shortYear ? String(date.getUTCFullYear()).slice(2) : date.getUTCFullYear();
+  return `${pad2(date.getUTCDate())}.${pad2(date.getUTCMonth() + 1)}.${year}`;
+}
+
+function formatTickMark(time, tickMarkType) {
+  if (typeof time !== "number") return String(time ?? "");
+
+  const date = new Date(time * 1000);
+
+  switch (tickMarkType) {
+    case 0: // year
+      return String(date.getUTCFullYear());
+    case 1: // month
+      return formatInZone("UTC", date, { month: "short" });
+    case 2: // day of month
+      return formatInZone("UTC", date, { day: "numeric", month: "short" });
+    case 4: // time with seconds
+      return utcClock(date, true);
+    case 3: // time
+      return utcClock(date);
+    default:
+      return isIntradayInterval() ? utcClock(date) : utcDate(date);
+  }
+}
+
+function formatCrosshairTime(time) {
+  if (typeof time !== "number") return String(time ?? "");
+
+  const date = new Date(time * 1000);
+  return isIntradayInterval()
+    ? `${utcDate(date, true)} ${utcClock(date)}`
+    : utcDate(date);
 }
 
 /* ----------------------------------------------------------------- chart */
@@ -343,17 +524,22 @@ function renderChart() {
       secondsVisible: false,
       rightOffset: 4,
       barSpacing: 7,
+      tickMarkFormatter: formatTickMark,
     },
     crosshair: {
       mode: LC.CrosshairMode.Normal,
       vertLine: { color: colors.border, labelBackgroundColor: colors.accent },
       horzLine: { color: colors.border, labelBackgroundColor: colors.accent },
     },
-    localization: { locale: "ru-RU" },
+    localization: { locale: "ru-RU", timeFormatter: formatCrosshairTime },
   });
 
+  const times = chartTimes(state.candles);
+
   state.chart = chart;
-  state.candleByTime = new Map(state.candles.map((candle) => [candle.time, candle]));
+  state.candleByTime = new Map(
+    state.candles.map((candle, index) => [times[index], candle]),
+  );
 
   const candleSeries = chart.addSeries(LC.CandlestickSeries, {
     upColor: colors.up,
@@ -368,11 +554,11 @@ function renderChart() {
   candleSeries.applyOptions({
     priceFormat: { type: "price", precision: digits, minMove: 1 / 10 ** digits },
   });
-  candleSeries.setData(state.candles.map(toCandleData));
+  candleSeries.setData(state.candles.map((candle, index) => toCandleData(candle, times[index])));
 
   state.series.candle = candleSeries;
 
-  buildIndicatorSeries(chart, colors);
+  buildIndicatorSeries(chart, colors, times);
 
   chart.timeScale().setVisibleLogicalRange({
     from: Math.max(0, state.candles.length - 160),
@@ -403,9 +589,8 @@ function ensurePane(chart, index) {
   while (chart.panes().length <= index) chart.addPane();
 }
 
-function buildIndicatorSeries(chart, colors) {
+function buildIndicatorSeries(chart, colors, times) {
   const LC = state.LC;
-  const times = state.candles.map((candle) => candle.time);
   const closes = state.candles.map((candle) => candle.close);
   const s = state.series;
   let pane = 1;
@@ -418,7 +603,7 @@ function buildIndicatorSeries(chart, colors) {
       lastValueVisible: false,
     });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    volume.setData(volumeData());
+    volume.setData(volumeData(times));
     s.volume = volume;
   }
 
@@ -545,9 +730,9 @@ function histogramData(times, values) {
   return out;
 }
 
-function volumeData() {
-  return state.candles.map((candle) => ({
-    time: candle.time,
+function volumeData(times = chartTimes(state.candles)) {
+  return state.candles.map((candle, index) => ({
+    time: times[index],
     value: candle.volume || 0,
     color: candle.close >= candle.open ? VOL_UP : VOL_DOWN,
   }));
@@ -557,10 +742,10 @@ function updateIndicators() {
   if (!state.chart) return;
 
   const s = state.series;
-  const times = state.candles.map((candle) => candle.time);
+  const times = chartTimes(state.candles);
   const closes = state.candles.map((candle) => candle.close);
 
-  if (s.volume) s.volume.setData(volumeData());
+  if (s.volume) s.volume.setData(volumeData(times));
   if (s.sma20) s.sma20.setData(lineData(times, sma(closes, 20)));
   if (s.sma50) s.sma50.setData(lineData(times, sma(closes, 50)));
   if (s.ema50) s.ema50.setData(lineData(times, ema(closes, 50)));
@@ -763,13 +948,14 @@ function applyKline(kline) {
     return;
   }
 
-  state.candleByTime.set(time, candle);
+  const displayTime = chartTime(time);
+  state.candleByTime.set(displayTime, candle);
 
   const s = state.series;
-  if (s.candle) s.candle.update(candle);
+  if (s.candle) s.candle.update(toCandleData(candle));
   if (s.volume) {
     s.volume.update({
-      time,
+      time: displayTime,
       value: candle.volume,
       color: candle.close >= candle.open ? VOL_UP : VOL_DOWN,
     });
@@ -799,9 +985,17 @@ function applyTail(candles) {
     }
   }
 
-  state.candleByTime = new Map(state.candles.map((candle) => [candle.time, candle]));
+  const times = chartTimes(state.candles);
+  state.candleByTime = new Map(
+    state.candles.map((candle, index) => [times[index], candle]),
+  );
 
-  if (state.series.candle) state.series.candle.setData(state.candles.map(toCandleData));
+  if (state.series.candle) {
+    state.series.candle.setData(
+      state.candles.map((candle, index) => toCandleData(candle, times[index])),
+    );
+  }
+
   updateIndicators();
   setOhlc(latest);
   updateActivePrice(latest.close);
@@ -1191,7 +1385,58 @@ function updateSourceBadge() {
 
 function updateClock() {
   const now = new Date();
-  el.clock.textContent = `${now.toISOString().slice(11, 19)} UTC`;
+  const zone = activeTimeZone();
+  const time = formatInZone(zone, now, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const zoneLabel = zone === "UTC" ? "UTC" : zoneOffsetLabel(zone, now);
+
+  el.clock.textContent = `${time} ${zoneLabel}`;
+  el.clock.dataset.zone = state.timezone;
+
+  el.clock.title =
+    state.timezone === "utc"
+      ? `Время UTC. Часовой пояс системы — ${LOCAL_TIME_ZONE} (${zoneOffsetLabel(LOCAL_TIME_ZONE, now)}). Нажмите, чтобы вернуться к времени системы.`
+      : `Время системы — ${LOCAL_TIME_ZONE} (${zoneOffsetLabel(LOCAL_TIME_ZONE, now)}). Нажмите, чтобы переключиться на UTC.`;
+
+  el.clock.setAttribute(
+    "aria-label",
+    `${time}, ${state.timezone === "utc" ? "UTC" : `часовой пояс системы ${zoneOffsetLabel(LOCAL_TIME_ZONE, now)}`}. Переключить часовой пояс.`,
+  );
+}
+
+function toggleTimezone() {
+  state.timezone = state.timezone === "utc" ? "local" : "utc";
+  saveSettings();
+  updateClock();
+  refreshChartTime();
+}
+
+// Re-bases the timestamps already on the chart (see chartTime) without
+// rebuilding it, so zoom and pan survive a time zone switch.
+function refreshChartTime() {
+  const chart = state.chart;
+  if (!chart) return;
+
+  const range = chart.timeScale().getVisibleLogicalRange();
+  const times = chartTimes(state.candles);
+
+  state.candleByTime = new Map(
+    state.candles.map((candle, index) => [times[index], candle]),
+  );
+
+  if (state.series.candle) {
+    state.series.candle.setData(
+      state.candles.map((candle, index) => toCandleData(candle, times[index])),
+    );
+  }
+
+  updateIndicators();
+
+  if (range) chart.timeScale().setVisibleLogicalRange(range);
 }
 
 /* ------------------------------------------------------------------- ui */
@@ -1207,6 +1452,13 @@ function bindUi() {
   });
 
   el.themeBtn.addEventListener("click", toggleTheme);
+  el.clock.addEventListener("click", toggleTimezone);
+  el.clock.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleTimezone();
+    }
+  });
   el.indicatorsBtn.addEventListener("click", openIndicators);
   el.closeIndicators.addEventListener("click", closeIndicatorsModal);
 
