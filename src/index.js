@@ -31,6 +31,64 @@ function parseSymbolList(value) {
   return list;
 }
 
+const DIAG_TARGETS = [
+  { name: "binance", url: "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1" },
+  { name: "binance-vision", url: "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1" },
+  { name: "binance-api1", url: "https://api1.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1" },
+  { name: "binance-api2", url: "https://api2.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1" },
+  { name: "binance-us", url: "https://api.binance.us/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1" },
+  { name: "mexc", url: "https://api.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1" },
+  { name: "bybit", url: "https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=1&limit=1" },
+  { name: "okx", url: "https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=1m&limit=1" },
+  { name: "kucoin", url: "https://api.kucoin.com/api/v1/market/candles?type=1min&symbol=BTC-USDT" },
+  { name: "bitget", url: "https://api.bitget.com/api/v2/spot/market/candles?symbol=BTCUSDT&granularity=1min&limit=1" },
+  { name: "gate", url: "https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=BTC_USDT&interval=1m&limit=1" },
+  { name: "coinbase", url: "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=60" },
+  { name: "kraken", url: "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1" },
+  { name: "bitstamp", url: "https://www.bitstamp.net/api/v2/ohlc/btcusd/?step=60&limit=1" },
+];
+
+// Reports which market-data providers this edge location can actually reach.
+async function diagnose(request) {
+  const started = Date.now();
+
+  const results = await Promise.all(
+    DIAG_TARGETS.map(async (target) => {
+      const began = Date.now();
+
+      try {
+        const response = await fetch(target.url, {
+          headers: { accept: "application/json", "user-agent": "OpenTrading/1.0" },
+          signal: AbortSignal.timeout(6000),
+        });
+        const text = await response.text();
+
+        return {
+          name: target.name,
+          ok: response.ok,
+          status: response.status,
+          ms: Date.now() - began,
+          sample: text.slice(0, 90),
+        };
+      } catch (error) {
+        return {
+          name: target.name,
+          ok: false,
+          status: 0,
+          ms: Date.now() - began,
+          error: String((error && error.message) || error),
+        };
+      }
+    }),
+  );
+
+  return json({
+    colo: (request.cf && request.cf.colo) || null,
+    tookMs: Date.now() - started,
+    results,
+  });
+}
+
 async function routeApi(request, env, url) {
   const path = url.pathname;
   const method = request.method;
@@ -77,6 +135,10 @@ async function routeApi(request, env, url) {
     const symbols = parseSymbolList(url.searchParams.get("symbols"));
     if (!symbols.length) return json({ error: "invalid_symbols" }, 400);
     return json(await getTickers(symbols));
+  }
+
+  if (path === "/api/diag" && method === "GET") {
+    return diagnose(request);
   }
 
   const watchlist = await handleWatchlist(request, env, url);

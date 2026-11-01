@@ -1,5 +1,35 @@
-const BINANCE = "https://api.binance.com";
-const CACHE_ORIGIN = "https://cache.opentrading.internal";
+const CACHE_ORIGIN = "https://cache.opentrading.internal/v2";
+
+/*
+ * Binance rejects requests from some Cloudflare edge locations.
+ * data-api.binance.vision is the official public market-data front door and is
+ * reachable from more places, so every REST call walks this list until one host
+ * answers. Dead hosts are skipped for HOST_COOLDOWN_MS to keep latency low.
+ */
+const BINANCE_HOSTS = [
+  "https://api.binance.com",
+  "https://data-api.binance.vision",
+  "https://api1.binance.com",
+  "https://api2.binance.com",
+];
+
+const HOST_COOLDOWN_MS = 10 * 60 * 1000;
+const hostState = BINANCE_HOSTS.map(() => ({ downUntil: 0 }));
+let preferredHost = 0;
+
+function hostOrder() {
+  const now = Date.now();
+  const alive = [];
+  const cooling = [];
+
+  for (let i = 0; i < BINANCE_HOSTS.length; i++) {
+    const index = (preferredHost + i) % BINANCE_HOSTS.length;
+    if (hostState[index].downUntil > now) cooling.push(index);
+    else alive.push(index);
+  }
+
+  return alive.concat(cooling);
+}
 
 export const INTERVALS = {
   "1m": 60_000,
@@ -93,17 +123,46 @@ async function cachedJson(key, ttlSeconds, producer) {
 
 export { cachedJson };
 
-async function binance(path) {
-  const response = await fetch(`${BINANCE}${path}`, {
-    headers: {
-      accept: "application/json",
-      "user-agent": "OpenTrading/1.0",
-    },
-    signal: AbortSignal.timeout(7000),
-  });
+export async function binanceFetch(path, options = {}) {
+  const timeout = options.timeout || 4500;
+  let lastError = null;
 
-  if (!response.ok) throw new Error(`binance_http_${response.status}`);
-  return response.json();
+  for (const index of hostOrder()) {
+    const host = BINANCE_HOSTS[index];
+
+    try {
+      const response = await fetch(`${host}${path}`, {
+        headers: {
+          accept: "application/json",
+          "user-agent": "OpenTrading/1.0",
+        },
+        signal: AbortSignal.timeout(timeout),
+      });
+
+      if (!response.ok) {
+        const error = new Error(`binance_http_${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+
+      const data = await response.json();
+      preferredHost = index;
+      hostState[index].downUntil = 0;
+      return data;
+    } catch (error) {
+      // A 4xx that is not a regional block or rate limit means the host is up
+      // and the request itself was wrong: fail fast instead of failing over.
+      const status = error && error.status;
+      if (status && status < 500 && status !== 403 && status !== 418 && status !== 429 && status !== 451) {
+        throw error;
+      }
+
+      lastError = error;
+      hostState[index].downUntil = Date.now() + HOST_COOLDOWN_MS;
+    }
+  }
+
+  throw lastError || new Error("binance_unreachable");
 }
 
 function toCandle(row) {
@@ -122,7 +181,7 @@ export async function getHistory(symbol, interval, limit) {
 
   return cachedJson(`${CACHE_ORIGIN}/history/${symbol}/${interval}/${limit}`, ttl, async () => {
     try {
-      const rows = await binance(
+      const rows = await binanceFetch(
         `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
       );
       const candles = rows
@@ -156,7 +215,7 @@ function mapTicker(row) {
 export async function getTicker(symbol) {
   return cachedJson(`${CACHE_ORIGIN}/ticker/${symbol}`, 5, async () => {
     try {
-      const row = await binance(`/api/v3/ticker/24hr?symbol=${symbol}`);
+      const row = await binanceFetch(`/api/v3/ticker/24hr?symbol=${symbol}`);
       return { symbol, source: "binance", ...mapTicker(row) };
     } catch {
       return { symbol, source: "synthetic", ...syntheticTicker(symbol) };
@@ -170,7 +229,7 @@ export async function getTickers(symbols) {
   return cachedJson(`${CACHE_ORIGIN}/tickers/${key}`, 10, async () => {
     try {
       const query = encodeURIComponent(JSON.stringify(symbols));
-      const rows = await binance(`/api/v3/ticker/24hr?symbols=${query}`);
+      const rows = await binanceFetch(`/api/v3/ticker/24hr?symbols=${query}`);
       const bySymbol = new Map(rows.map((row) => [row.symbol, row]));
 
       const tickers = symbols.map((symbol) => {

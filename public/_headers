@@ -1,0 +1,5 @@
+# Cloudflare serves static assets before the Worker script runs, so headers for
+# HTML/CSS/JS have to live here instead of src/index.js.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

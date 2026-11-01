@@ -1,7 +1,6 @@
-import { cachedJson } from "./market.js";
+import { binanceFetch, cachedJson } from "./market.js";
 
-const CACHE_KEY = "https://cache.opentrading.internal/symbols";
-const BINANCE = "https://api.binance.com";
+const CACHE_KEY = "https://cache.opentrading.internal/v2/symbols";
 
 const POPULAR = [
   "BTCUSDT",
@@ -71,14 +70,8 @@ function sortSymbols(list) {
 }
 
 async function fetchExchangeInfo() {
-  const response = await fetch(`${BINANCE}/api/v3/exchangeInfo`, {
-    headers: { accept: "application/json", "user-agent": "OpenTrading/1.0" },
-    signal: AbortSignal.timeout(9000),
-  });
+  const data = await binanceFetch("/api/v3/exchangeInfo", { timeout: 8000 });
 
-  if (!response.ok) throw new Error(`binance_http_${response.status}`);
-
-  const data = await response.json();
   if (!data || !Array.isArray(data.symbols)) throw new Error("bad_exchange_info");
 
   const seen = new Set();
