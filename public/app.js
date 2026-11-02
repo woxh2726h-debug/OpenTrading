@@ -22,11 +22,20 @@ const INDICATORS = [
   { id: "macd", label: "MACD (12, 26, 9)" },
 ];
 
+const THEMES = [
+  { id: "dark", label: "Полночь", hint: "тёмная", preview: ["#080b11", "#141a25", "#3b82f6"] },
+  { id: "light", label: "День", hint: "светлая", preview: ["#f4f6fb", "#eef2f9", "#2563eb"] },
+  { id: "win95", label: "Win95 олива", hint: "ретро, 1995", preview: ["#6f7b3c", "#c9c9a8", "#3f4a12"] },
+  { id: "mango", label: "Тропический манго", hint: "светлая, тёплая", preview: ["#fff3dd", "#ffeacd", "#f07d1c"] },
+  { id: "nord", label: "Арктика", hint: "холодная", preview: ["#232831", "#3b4252", "#88c0d0"] },
+  { id: "terminal", label: "Фосфор", hint: "CRT-терминал", preview: ["#040d07", "#0a1d10", "#2bff7d"] },
+];
+
+const WL_SORTS = new Set(["manual", "change", "price", "name"]);
+
 const SETTINGS_KEY = "ot.settings.v1";
 const WATCHLIST_KEY = "ot.watchlist.v1";
 const HISTORY_LIMIT = 600;
-const VOL_UP = "rgba(38, 166, 154, 0.32)";
-const VOL_DOWN = "rgba(239, 83, 80, 0.32)";
 
 const state = {
   symbol: "BTCUSDT",
@@ -47,6 +56,10 @@ const state = {
   watchlist: DEFAULT_WATCHLIST.slice(),
   quotes: new Map(),
   watchlistMode: "local",
+  wlSort: "manual",
+  wlFilter: "",
+  sidebarCollapsed: false,
+  palette: null,
   LC: null,
   chart: null,
   series: {},
@@ -71,6 +84,9 @@ async function boot() {
   cacheElements();
   loadSettings();
   applyTheme();
+  applySidebarState();
+  el.wlFilter.value = state.wlFilter;
+  el.wlSort.value = state.wlSort;
   renderIndicators();
   renderWatchlist();
   bindUi();
@@ -104,8 +120,11 @@ function cacheElements() {
     "tfGroup",
     "indicatorsBtn",
     "themeBtn",
-    "themeIcon",
     "addSymbolBtn",
+    "sidebarCollapse",
+    "wlCount",
+    "wlFilter",
+    "wlSort",
     "watchlist",
     "chartSymbol",
     "chartTf",
@@ -128,6 +147,9 @@ function cacheElements() {
     "indicatorsModal",
     "indList",
     "closeIndicators",
+    "themeModal",
+    "themeGrid",
+    "closeThemes",
     "toast",
   ];
 
@@ -171,11 +193,17 @@ function loadSettings() {
         }
       }
     }
-    if (saved.theme === "light" || saved.theme === "dark") {
+    if (THEMES.some((theme) => theme.id === saved.theme)) {
       state.theme = saved.theme;
     }
     if (saved.timezone === "local" || saved.timezone === "utc") {
       state.timezone = saved.timezone;
+    }
+    if (saved.sidebar === "collapsed") {
+      state.sidebarCollapsed = true;
+    }
+    if (WL_SORTS.has(saved.wlSort)) {
+      state.wlSort = saved.wlSort;
     }
   }
 
@@ -199,6 +227,8 @@ function saveSettings() {
     theme: state.theme,
     timezone: state.timezone,
     indicators: state.indicators,
+    sidebar: state.sidebarCollapsed ? "collapsed" : "expanded",
+    wlSort: state.wlSort,
   });
 }
 
@@ -221,9 +251,17 @@ function fmtPrice(value) {
 }
 
 function fmtPct(value) {
-  if (!Number.isFinite(value)) return "—";
+  if (!Number.isFinite(value)) return "-";
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(2)}%`;
+}
+
+function fmtCompact(value) {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("ru-RU", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
 }
 
 function precisionFor(price) {
@@ -461,19 +499,49 @@ function cssVar(name, fallback) {
   return value || fallback;
 }
 
+function withAlpha(color, alpha) {
+  const value = String(color || "").trim();
+  const match = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+
+  if (match) {
+    const hex = match[1].length === 3 ? match[1].replace(/./g, (c) => c + c) : match[1];
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  const rgb = value.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgb) {
+    const parts = rgb[1].split(",").map((part) => part.trim());
+    return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`;
+  }
+
+  return value || `rgba(128, 128, 128, ${alpha})`;
+}
+
 function chartColors() {
+  const text = cssVar("--text-dim", "#63708a");
+  const up = cssVar("--up", "#26a69a");
+  const down = cssVar("--down", "#ef5350");
+
   return {
     bg: cssVar("--chart-bg", "#080b11"),
-    text: cssVar("--text-dim", "#63708a"),
+    text,
     grid: cssVar("--chart-grid", "rgba(255,255,255,.035)"),
     border: cssVar("--border", "#222b3a"),
-    up: cssVar("--up", "#26a69a"),
-    down: cssVar("--down", "#ef5350"),
+    up,
+    down,
     accent: cssVar("--accent", "#3b82f6"),
     info: cssVar("--info", "#4da3ff"),
     warn: cssVar("--warn", "#f5a623"),
-    rsi: "#b58cff",
-    muted: cssVar("--text-dim", "#63708a"),
+    rsi: cssVar("--chart-rsi", "#b58cff"),
+    muted: text,
+    font: cssVar("--font-chart", 'Inter, "Segoe UI", system-ui, sans-serif'),
+    volUp: withAlpha(up, 0.32),
+    volDown: withAlpha(down, 0.32),
+    macdUp: withAlpha(up, 0.55),
+    macdDown: withAlpha(down, 0.55),
   };
 }
 
@@ -489,13 +557,17 @@ function destroyChart() {
   state.series = {};
 }
 
-function renderChart() {
+function renderChart({ preserveView = false } = {}) {
   if (!state.LC || !state.candles.length) return;
+
+  const previousRange =
+    preserveView && state.chart ? state.chart.timeScale().getVisibleLogicalRange() : null;
 
   destroyChart();
 
   const LC = state.LC;
   const colors = chartColors();
+  state.palette = colors;
   const host = el.chart;
   const width = host.clientWidth || 800;
   const height = host.clientHeight || 420;
@@ -506,7 +578,7 @@ function renderChart() {
     layout: {
       background: { type: LC.ColorType.Solid, color: colors.bg },
       textColor: colors.text,
-      fontFamily: "Inter, Segoe UI, system-ui, sans-serif",
+      fontFamily: colors.font,
       fontSize: 11,
       attributionLogo: false,
     },
@@ -560,10 +632,12 @@ function renderChart() {
 
   buildIndicatorSeries(chart, colors, times);
 
-  chart.timeScale().setVisibleLogicalRange({
-    from: Math.max(0, state.candles.length - 160),
-    to: state.candles.length + 4,
-  });
+  chart.timeScale().setVisibleLogicalRange(
+    previousRange || {
+      from: Math.max(0, state.candles.length - 160),
+      to: state.candles.length + 4,
+    },
+  );
 
   chart.subscribeCrosshairMove((param) => {
     if (!param || !param.time) {
@@ -718,23 +792,27 @@ function lineData(times, values) {
 
 function histogramData(times, values) {
   const out = [];
+  const colors = state.palette || chartColors();
+
   for (let i = 0; i < values.length; i++) {
     const value = values[i];
     if (value == null || !Number.isFinite(value)) continue;
     out.push({
       time: times[i],
       value,
-      color: value >= 0 ? "rgba(38, 166, 154, 0.55)" : "rgba(239, 83, 80, 0.55)",
+      color: value >= 0 ? colors.macdUp : colors.macdDown,
     });
   }
   return out;
 }
 
 function volumeData(times = chartTimes(state.candles)) {
+  const colors = state.palette || chartColors();
+
   return state.candles.map((candle, index) => ({
     time: times[index],
     value: candle.volume || 0,
-    color: candle.close >= candle.open ? VOL_UP : VOL_DOWN,
+    color: candle.close >= candle.open ? colors.volUp : colors.volDown,
   }));
 }
 
@@ -954,10 +1032,11 @@ function applyKline(kline) {
   const s = state.series;
   if (s.candle) s.candle.update(toCandleData(candle));
   if (s.volume) {
+    const colors = state.palette || chartColors();
     s.volume.update({
       time: displayTime,
       value: candle.volume,
-      color: candle.close >= candle.open ? VOL_UP : VOL_DOWN,
+      color: candle.close >= candle.open ? colors.volUp : colors.volDown,
     });
   }
 
@@ -1003,19 +1082,68 @@ function applyTail(candles) {
 
 /* -------------------------------------------------------------- watchlist */
 
+const lastPrices = new Map();
+
+function orderedWatchlist() {
+  const query = state.wlFilter.trim().toLowerCase();
+  let symbols = state.watchlist.filter(
+    (symbol) => !query || symbol.toLowerCase().includes(query),
+  );
+
+  if (state.wlSort === "name") {
+    symbols = symbols.slice().sort((a, b) => a.localeCompare(b, "ru"));
+  } else if (state.wlSort === "price" || state.wlSort === "change") {
+    const metric = (symbol) => {
+      const quote = state.quotes.get(symbol);
+      const value = state.wlSort === "price" ? quote?.price : quote?.changePct;
+      return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+    };
+    symbols = symbols.slice().sort((a, b) => metric(b) - metric(a));
+  }
+
+  return symbols;
+}
+
 function renderWatchlist() {
+  const symbols = orderedWatchlist();
   el.watchlist.innerHTML = "";
 
-  for (const symbol of state.watchlist) {
-    el.watchlist.appendChild(watchlistRow(symbol));
+  if (!symbols.length) {
+    const empty = document.createElement("p");
+    empty.className = "wl-empty";
+    empty.textContent = state.watchlist.length
+      ? "Ничего не найдено. Измените фильтр."
+      : "Список пуст. Добавьте пару кнопкой +.";
+    el.watchlist.appendChild(empty);
+  } else {
+    const fragment = document.createDocumentFragment();
+    for (const symbol of symbols) fragment.appendChild(watchlistRow(symbol));
+    el.watchlist.appendChild(fragment);
+  }
+
+  updateWatchlistCount();
+}
+
+function updateWatchlistCount() {
+  if (el.wlCount) el.wlCount.textContent = String(state.watchlist.length);
+}
+
+function syncActiveRow() {
+  for (const row of el.watchlist.querySelectorAll(".wl-row")) {
+    const active = row.dataset.symbol === state.symbol;
+    row.classList.toggle("active", active);
+    if (active) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
   }
 }
 
 function watchlistRow(symbol) {
-  const row = document.createElement("button");
-  row.type = "button";
+  const row = document.createElement("div");
   row.className = "wl-row" + (symbol === state.symbol ? " active" : "");
   row.dataset.symbol = symbol;
+  row.setAttribute("role", "button");
+  row.tabIndex = 0;
+  if (symbol === state.symbol) row.setAttribute("aria-current", "true");
 
   const base = symbol.replace(/USDT$/, "");
 
@@ -1023,33 +1151,85 @@ function watchlistRow(symbol) {
     `<span class="wl-symbol"><span class="wl-base">${base}</span><span class="wl-quote">USDT</span></span>` +
     `<span class="wl-price" data-price>—</span>` +
     `<span class="wl-change" data-change>—</span>` +
-    `<span class="wl-remove" role="button" aria-label="Удалить ${symbol}" title="Удалить">×</span>`;
+    `<button class="wl-remove" type="button" aria-label="Удалить ${symbol}" title="Удалить">×</button>`;
 
   row.addEventListener("click", (event) => {
-    if (event.target instanceof Element && event.target.closest(".wl-remove")) {
-      event.stopPropagation();
-      removeSymbol(symbol);
-      return;
-    }
+    if (event.target instanceof Element && event.target.closest(".wl-remove")) return;
     setSymbol(symbol);
   });
 
-  const quote = state.quotes.get(symbol);
-  if (quote) fillQuote(row, quote);
+  row.querySelector(".wl-remove").addEventListener("click", (event) => {
+    event.stopPropagation();
+    removeSymbol(symbol);
+  });
+
+  row.addEventListener("keydown", (event) => {
+    if (event.target !== row) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setSymbol(symbol);
+    }
+  });
+
+  fillQuote(row, state.quotes.get(symbol));
 
   return row;
 }
 
 function fillQuote(row, quote) {
-  const price = row.querySelector("[data-price]");
-  const change = row.querySelector("[data-change]");
+  const priceNode = row.querySelector("[data-price]");
+  const changeNode = row.querySelector("[data-change]");
 
-  if (price) price.textContent = fmtPrice(quote.price);
-  if (change) {
-    change.textContent = fmtPct(quote.changePct);
-    change.classList.toggle("up", quote.changePct >= 0);
-    change.classList.toggle("down", quote.changePct < 0);
+  if (!quote) {
+    if (priceNode) priceNode.textContent = "—";
+    if (changeNode) {
+      changeNode.textContent = "—";
+      changeNode.classList.remove("up", "down");
+    }
+    return;
   }
+
+  paintPrice(priceNode, quote.price, row.dataset.symbol, true);
+
+  if (changeNode) {
+    changeNode.textContent = fmtPct(quote.changePct);
+    changeNode.classList.toggle("up", quote.changePct >= 0);
+    changeNode.classList.toggle("down", quote.changePct < 0);
+  }
+
+  row.title = quoteTooltip(row.dataset.symbol, quote);
+}
+
+function paintPrice(node, price, symbol, flash) {
+  if (!node) return;
+
+  if (!Number.isFinite(price)) {
+    node.textContent = "—";
+    return;
+  }
+
+  const previous = lastPrices.get(symbol);
+  node.textContent = fmtPrice(price);
+  lastPrices.set(symbol, price);
+
+  if (!flash || !Number.isFinite(previous) || previous === price) return;
+
+  node.classList.remove("flash-up", "flash-down");
+  void node.offsetWidth;
+  node.classList.add(price > previous ? "flash-up" : "flash-down");
+}
+
+function quoteTooltip(symbol, quote) {
+  const base = symbol.replace(/USDT$/, "");
+  const rows = [`${base}/USDT`];
+
+  if (Number.isFinite(quote.price)) rows.push(`Цена: ${fmtPrice(quote.price)}`);
+  if (Number.isFinite(quote.changePct)) rows.push(`За 24 ч: ${fmtPct(quote.changePct)}`);
+  if (Number.isFinite(quote.high)) rows.push(`Максимум 24 ч: ${fmtPrice(quote.high)}`);
+  if (Number.isFinite(quote.low)) rows.push(`Минимум 24 ч: ${fmtPrice(quote.low)}`);
+  if (Number.isFinite(quote.volume)) rows.push(`Объём 24 ч: ${fmtCompact(quote.volume)} USDT`);
+
+  return rows.join("\n");
 }
 
 async function refreshQuotes() {
@@ -1062,9 +1242,17 @@ async function refreshQuotes() {
 
     for (const quote of data.tickers || []) state.quotes.set(quote.symbol, quote);
 
-    for (const row of el.watchlist.querySelectorAll(".wl-row")) {
-      const quote = state.quotes.get(row.dataset.symbol);
-      if (quote) fillQuote(row, quote);
+    const order = orderedWatchlist();
+    const rendered = [...el.watchlist.querySelectorAll(".wl-row")].map(
+      (row) => row.dataset.symbol,
+    );
+
+    if (rendered.join(",") !== order.join(",")) {
+      renderWatchlist();
+    } else {
+      for (const row of el.watchlist.querySelectorAll(".wl-row")) {
+        fillQuote(row, state.quotes.get(row.dataset.symbol));
+      }
     }
 
     const active = state.quotes.get(state.symbol);
@@ -1083,7 +1271,7 @@ function updateActivePrice(price) {
   const node = el.watchlist.querySelector(
     `.wl-row[data-symbol="${state.symbol}"] [data-price]`,
   );
-  if (node) node.textContent = fmtPrice(price);
+  paintPrice(node, price, state.symbol, true);
 }
 
 async function addSymbol(symbol) {
@@ -1091,6 +1279,8 @@ async function addSymbol(symbol) {
 
   if (!state.watchlist.includes(symbol)) {
     state.watchlist.push(symbol);
+    state.wlFilter = "";
+    el.wlFilter.value = "";
     persistWatchlist();
     renderWatchlist();
     refreshQuotes();
@@ -1113,6 +1303,7 @@ async function removeSymbol(symbol) {
   persistWatchlist();
   renderWatchlist();
   state.quotes.delete(symbol);
+  lastPrices.delete(symbol);
 
   if (state.watchlistMode === "d1") {
     fetch(`/api/watchlist/${encodeURIComponent(symbol)}`, { method: "DELETE" }).catch(() => {});
@@ -1165,6 +1356,7 @@ async function setSymbol(symbol) {
 
   state.symbol = symbol;
   saveSettings();
+  syncActiveRow();
   updateSymbolLabels();
   updateTimeframeButtons();
   await loadHistory();
@@ -1314,16 +1506,56 @@ function closeIndicatorsModal() {
 
 /* ----------------------------------------------------------------- theme */
 
-function applyTheme() {
-  document.documentElement.dataset.theme = state.theme;
-  el.themeIcon.textContent = state.theme === "dark" ? "☀" : "☾";
+function themeById(id) {
+  return THEMES.find((theme) => theme.id === id) || THEMES[0];
 }
 
-function toggleTheme() {
-  state.theme = state.theme === "dark" ? "light" : "dark";
+function applyTheme() {
+  document.documentElement.dataset.theme = state.theme;
+  renderThemes();
+}
+
+function renderThemes() {
+  if (!el.themeGrid) return;
+
+  el.themeGrid.innerHTML = "";
+
+  for (const theme of THEMES) {
+    const tile = document.createElement("button");
+    const active = theme.id === state.theme;
+    tile.type = "button";
+    tile.className = "theme-tile" + (active ? " active" : "");
+    tile.dataset.theme = theme.id;
+    tile.setAttribute("aria-pressed", String(active));
+    tile.title = `${theme.label} — ${theme.hint}`;
+    tile.innerHTML =
+      `<span class="theme-swatch" aria-hidden="true">` +
+      theme.preview.map((color) => `<i style="background:${color}"></i>`).join("") +
+      `</span>` +
+      `<span class="theme-name">${theme.label}</span>` +
+      `<span class="theme-hint">${theme.hint}</span>`;
+
+    tile.addEventListener("click", () => setTheme(theme.id));
+    el.themeGrid.appendChild(tile);
+  }
+}
+
+function setTheme(id) {
+  if (!THEMES.some((theme) => theme.id === id) || id === state.theme) return;
+
+  state.theme = id;
   saveSettings();
   applyTheme();
-  if (state.candles.length && state.LC) renderChart();
+
+  if (state.candles.length && state.LC) renderChart({ preserveView: true });
+}
+
+function openThemes() {
+  el.themeModal.classList.remove("hidden");
+}
+
+function closeThemesModal() {
+  el.themeModal.classList.add("hidden");
 }
 
 /* ---------------------------------------------------------------- status */
@@ -1444,14 +1676,42 @@ function refreshChartTime() {
 function bindUi() {
   el.symbolBtn.addEventListener("click", openSearch);
   el.addSymbolBtn.addEventListener("click", openSearch);
-  el.sidebarToggle.addEventListener("click", () => el.sidebar.classList.toggle("open"));
+
+  el.sidebarToggle.addEventListener("click", toggleSidebar);
+  el.sidebarCollapse.addEventListener("click", () => {
+    if (isMobileLayout()) {
+      closeSidebar();
+      return;
+    }
+    state.sidebarCollapsed = true;
+    saveSettings();
+    applySidebarState();
+  });
+
+  el.wlFilter.addEventListener("input", () => {
+    state.wlFilter = el.wlFilter.value;
+    renderWatchlist();
+  });
+
+  el.wlSort.addEventListener("change", () => {
+    state.wlSort = WL_SORTS.has(el.wlSort.value) ? el.wlSort.value : "manual";
+    saveSettings();
+    renderWatchlist();
+  });
 
   el.tfGroup.addEventListener("click", (event) => {
     const button = event.target instanceof Element ? event.target.closest("button[data-tf]") : null;
     if (button) changeInterval(button.dataset.tf);
   });
 
-  el.themeBtn.addEventListener("click", toggleTheme);
+  el.themeBtn.addEventListener("click", openThemes);
+  el.closeThemes.addEventListener("click", closeThemesModal);
+  el.themeModal.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.dataset.close === "theme") {
+      closeThemesModal();
+    }
+  });
+
   el.clock.addEventListener("click", toggleTimezone);
   el.clock.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -1496,6 +1756,7 @@ function onKeyDown(event) {
   if (event.key === "Escape") {
     closeSearch();
     closeIndicatorsModal();
+    closeThemesModal();
     return;
   }
 
@@ -1527,8 +1788,41 @@ function onKeyDown(event) {
   }
 }
 
+function isMobileLayout() {
+  return window.matchMedia("(max-width: 900px)").matches;
+}
+
+function applySidebarState() {
+  const app = document.querySelector(".app");
+  if (app) app.dataset.sidebar = state.sidebarCollapsed ? "collapsed" : "expanded";
+
+  const expanded = !state.sidebarCollapsed;
+  el.sidebarToggle.setAttribute("aria-expanded", String(expanded));
+  el.sidebarToggle.title = expanded ? "Скрыть список наблюдения" : "Показать список наблюдения";
+  el.sidebarToggle.setAttribute("aria-label", el.sidebarToggle.title);
+}
+
+function toggleSidebar() {
+  if (isMobileLayout()) {
+    const open = el.sidebar.classList.toggle("open");
+    el.sidebarToggle.setAttribute("aria-expanded", String(open));
+    el.sidebarToggle.title = open ? "Скрыть список наблюдения" : "Показать список наблюдения";
+    el.sidebarToggle.setAttribute("aria-label", el.sidebarToggle.title);
+    return;
+  }
+
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  saveSettings();
+  applySidebarState();
+}
+
 function closeSidebar() {
   el.sidebar.classList.remove("open");
+  if (isMobileLayout()) {
+    el.sidebarToggle.setAttribute("aria-expanded", "false");
+    el.sidebarToggle.title = "Показать список наблюдения";
+    el.sidebarToggle.setAttribute("aria-label", el.sidebarToggle.title);
+  }
 }
 
 /* ------------------------------------------------------------ ui helpers */

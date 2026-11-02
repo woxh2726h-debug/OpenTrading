@@ -17,10 +17,13 @@
     <div class="app">
       <header class="topbar">
         <button
-          class="icon-btn only-mobile"
+          class="icon-btn"
           id="sidebarToggle"
           type="button"
-          aria-label="Открыть список наблюдения"
+          aria-label="Список наблюдения"
+          aria-expanded="true"
+          aria-controls="sidebar"
+          title="Список наблюдения"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 6h16M4 12h16M4 18h16" />
@@ -59,25 +62,88 @@
           <span>Индикаторы</span>
         </button>
 
-        <button class="icon-btn" id="themeBtn" type="button" aria-label="Сменить тему">
-          <span id="themeIcon">☀</span>
+        <button
+          class="icon-btn"
+          id="themeBtn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-label="Тема оформления"
+          title="Тема оформления"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 3a9 9 0 1 0 0 18c1.2 0 1.9-.9 1.9-2 0-.6-.3-1.1-.6-1.5-.3-.4-.6-.9-.6-1.5 0-1.1.9-2 2-2H18a3 3 0 0 0 3-3c0-4.4-4-8-9-8Z"
+            />
+            <circle cx="7.6" cy="11.6" r="1" />
+            <circle cx="11.4" cy="8" r="1" />
+            <circle cx="16.2" cy="11.2" r="1" />
+          </svg>
         </button>
       </header>
 
       <div class="workspace">
-        <aside class="sidebar" id="sidebar">
+        <aside class="sidebar" id="sidebar" aria-label="Список наблюдения">
           <div class="sidebar-head">
-            <h2>Список наблюдения</h2>
-            <button
-              class="icon-btn small"
-              id="addSymbolBtn"
-              type="button"
-              aria-label="Добавить символ"
-            >
-              +
-            </button>
+            <h2>
+              Наблюдение
+              <span class="wl-count" id="wlCount">0</span>
+            </h2>
+            <div class="sidebar-actions">
+              <button
+                class="icon-btn small"
+                id="addSymbolBtn"
+                type="button"
+                aria-label="Добавить символ"
+                title="Добавить символ (Ctrl+K)"
+              >
+                +
+              </button>
+              <button
+                class="icon-btn small"
+                id="sidebarCollapse"
+                type="button"
+                aria-label="Свернуть список"
+                title="Свернуть список"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m13 6-6 6 6 6" />
+                  <path d="m18 6-6 6 6 6" />
+                </svg>
+              </button>
+            </div>
           </div>
+
+          <div class="wl-tools">
+            <label class="wl-filter">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" />
+                <path d="m20 20-4-4" />
+              </svg>
+              <input
+                id="wlFilter"
+                type="search"
+                placeholder="Фильтр"
+                aria-label="Фильтр по символам"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+            <select id="wlSort" class="wl-sort" aria-label="Сортировка списка" title="Сортировка">
+              <option value="manual">По порядку</option>
+              <option value="change">По 24ч</option>
+              <option value="price">По цене</option>
+              <option value="name">А–Я</option>
+            </select>
+          </div>
+
+          <div class="wl-columns" aria-hidden="true">
+            <span>Пара</span>
+            <span>Цена</span>
+            <span>24ч</span>
+          </div>
+
           <div class="watchlist" id="watchlist"></div>
+
           <div class="sidebar-foot">
             <span>Данные Binance / MEXC · обновление ~1с</span>
             <span class="foot-note">D1: необязательно</span>
@@ -153,6 +219,22 @@
         <p class="hint">Отмечай нужные — график перестроится сразу.</p>
         <div class="ind-list" id="indList"></div>
         <button class="btn primary wide" id="closeIndicators" type="button">Готово</button>
+      </div>
+    </div>
+
+    <div
+      class="modal hidden"
+      id="themeModal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Тема оформления"
+    >
+      <div class="modal-backdrop" data-close="theme"></div>
+      <div class="modal-card theme-card">
+        <h3>Тема оформления</h3>
+        <p class="hint">Применяется сразу. Выбор сохраняется в браузере.</p>
+        <div class="theme-grid" id="themeGrid"></div>
+        <button class="btn primary wide" id="closeThemes" type="button">Готово</button>
       </div>
     </div>
 
