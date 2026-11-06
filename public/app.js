@@ -1,4 +1,5 @@
 import { bollinger, ema, macd, rsi, sma } from "./lib/indicators.js";
+import { compilePine, runPine } from "./lib/pine.js";
 
 const TIMEFRAMES = {
   "1m": "1м",
@@ -54,6 +55,7 @@ const state = {
     rsi: false,
     macd: false,
   },
+  pineEnabled: {},
   watchlist: DEFAULT_WATCHLIST.slice(),
   quotes: new Map(),
   watchlistMode: "local",
@@ -85,6 +87,9 @@ const pine = {
   activeId: null,
   saveTimer: 0,
   gutterLines: 0,
+  compiled: new Map(),
+  results: new Map(),
+  series: {},
 };
 
 /* ------------------------------------------------------------------ boot */
@@ -220,6 +225,11 @@ function loadSettings() {
         }
       }
     }
+    if (saved.pine && typeof saved.pine === "object") {
+      for (const [id, enabled] of Object.entries(saved.pine)) {
+        if (typeof enabled === "boolean") state.pineEnabled[id] = enabled;
+      }
+    }
     if (THEMES.some((theme) => theme.id === saved.theme)) {
       state.theme = saved.theme;
     }
@@ -254,6 +264,7 @@ function saveSettings() {
     theme: state.theme,
     timezone: state.timezone,
     indicators: state.indicators,
+    pine: state.pineEnabled,
     sidebar: state.sidebarCollapsed ? "collapsed" : "expanded",
     wlSort: state.wlSort,
   });
@@ -582,6 +593,7 @@ function destroyChart() {
     state.chart = null;
   }
   state.series = {};
+  pine.series = {};
 }
 
 function renderChart({ preserveView = false } = {}) {
@@ -793,6 +805,8 @@ function buildIndicatorSeries(chart, colors, times) {
     pane += 1;
   }
 
+  buildPineSeries(chart, colors, times, pane);
+
   const panes = chart.panes();
   if (panes.length > 1) {
     panes[0].setStretchFactor(1);
@@ -804,6 +818,248 @@ function buildIndicatorSeries(chart, colors, times) {
     }
     if (state.indicators.macd && panes[index]) {
       panes[index].setStretchFactor(0.32);
+      index += 1;
+    }
+    while (index < panes.length) {
+      panes[index].setStretchFactor(0.26);
+      index += 1;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ pine */
+
+const PINE_FALLBACK_COLORS = ["info", "warn", "accent", "rsi", "up", "down", "muted"];
+
+function pineCompiled(script) {
+  const code = script.code || "";
+  const cached = pine.compiled.get(code);
+  if (cached) return cached;
+
+  const compiled = compilePine(code);
+  pine.compiled.set(code, compiled);
+
+  if (pine.compiled.size > 120) {
+    const oldest = pine.compiled.keys().next().value;
+    if (oldest !== code) pine.compiled.delete(oldest);
+  }
+
+  return compiled;
+}
+
+function pineRun(script) {
+  const compiled = pineCompiled(script);
+
+  if (!compiled.ok) {
+    return {
+      overlay: false,
+      title: script.name,
+      error: compiled.error,
+      plots: [],
+      shapes: [],
+      hlines: [],
+    };
+  }
+
+  return runPine(compiled.program, state.candles, {
+    symbol: state.symbol,
+    interval: state.interval,
+  });
+}
+
+function enabledPineScripts() {
+  return pine.scripts.filter((script) => state.pineEnabled[script.id]);
+}
+
+function pinePlotColor(colors, index, custom) {
+  if (typeof custom === "string" && /^(#|rgba?\()/.test(custom)) return custom;
+  const key = PINE_FALLBACK_COLORS[index % PINE_FALLBACK_COLORS.length];
+  return colors[key] || colors.accent;
+}
+
+function isPineColumns(style) {
+  return /style_columns|style_histogram/i.test(String(style || ""));
+}
+
+function pineLineStyle(LC, style) {
+  const text = String(style || "");
+  if (/dashed/i.test(text)) return LC.LineStyle.Dashed;
+  if (/dotted/i.test(text)) return LC.LineStyle.Dotted;
+  return LC.LineStyle.Solid;
+}
+
+function pineMarkerPosition(location) {
+  const text = String(location || "");
+  if (/abovebar/i.test(text)) return "aboveBar";
+  if (/belowbar/i.test(text)) return "belowBar";
+  return "inBar";
+}
+
+function pineMarkerShape(style) {
+  const text = String(style || "");
+  if (/triangledown|xcross|arrowdown/i.test(text)) return "arrowDown";
+  if (/triangleup|arrowup/i.test(text)) return "arrowUp";
+  if (/square/i.test(text)) return "square";
+  return "circle";
+}
+
+function collectPineMarkers(result) {
+  const markers = [];
+  const times = chartTimes(state.candles);
+
+  for (const shape of result.shapes || []) {
+    const position = pineMarkerPosition(shape.location);
+    const markerShape = pineMarkerShape(shape.style);
+
+    for (let i = 0; i < shape.values.length; i++) {
+      if (!shape.values[i] || times[i] == null) continue;
+      markers.push({
+        time: times[i],
+        position,
+        shape: markerShape,
+        color: shape.colors[i] || shape.color || "#089981",
+        size: 1,
+      });
+    }
+  }
+
+  markers.sort((a, b) => a.time - b.time);
+  return markers.slice(-400);
+}
+
+function buildPineSeries(chart, colors, times, firstPane) {
+  const LC = state.LC;
+  const candleSeries = state.series.candle;
+  pine.series = {};
+  let paneIndex = firstPane;
+
+  for (const script of enabledPineScripts()) {
+    const result = pineRun(script);
+    pine.results.set(script.id, result);
+
+    const plots = result.plots || [];
+    const overlay = Boolean(result.overlay);
+    if (!overlay && plots.length) ensurePane(chart, paneIndex);
+
+    const entry = {
+      overlay,
+      pane: overlay ? 0 : paneIndex,
+      plots: [],
+      markerPrimitive: null,
+    };
+
+    plots.forEach((plot, order) => {
+      const color = pinePlotColor(colors, order, plot.color);
+      let series;
+
+      if (isPineColumns(plot.style)) {
+        series = chart.addSeries(
+          LC.HistogramSeries,
+          {
+            color,
+            title: plot.title,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          },
+          entry.pane,
+        );
+        const points = [];
+        for (let i = 0; i < plot.values.length; i++) {
+          const value = plot.values[i];
+          if (!Number.isFinite(value)) continue;
+          points.push({ time: times[i], value, color });
+        }
+        series.setData(points);
+      } else {
+        series = chart.addSeries(
+          LC.LineSeries,
+          {
+            color,
+            lineWidth: Math.max(1, Math.min(4, plot.width || 1)),
+            title: plot.title,
+            lineStyle: pineLineStyle(LC, plot.style),
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          },
+          entry.pane,
+        );
+        series.setData(lineData(times, plot.values));
+      }
+
+      entry.plots.push({ id: plot.id, series, columns: isPineColumns(plot.style), color });
+    });
+
+    if (!overlay && plots.length) paneIndex += 1;
+
+    const anchor = overlay ? candleSeries : entry.plots[0]?.series || candleSeries;
+
+    for (const hline of result.hlines || []) {
+      const target = entry.plots[0]?.series || anchor;
+      if (!target || !Number.isFinite(hline.price)) continue;
+      target.createPriceLine({
+        price: hline.price,
+        color: hline.color || colors.muted,
+        lineWidth: Math.max(1, Math.min(4, hline.width || 1)),
+        lineStyle: pineLineStyle(LC, hline.style),
+        axisLabelVisible: true,
+        title: hline.title || "",
+      });
+    }
+
+    if (anchor) {
+      const markers = collectPineMarkers(result);
+      entry.markerPrimitive = LC.createSeriesMarkers(anchor, markers);
+    }
+
+    pine.series[script.id] = entry;
+  }
+}
+
+function updatePineSeries(times) {
+  for (const script of enabledPineScripts()) {
+    const stored = pine.series[script.id];
+    const result = pineRun(script);
+    pine.results.set(script.id, result);
+
+    if (
+      !stored ||
+      result.error ||
+      stored.plots.length !== (result.plots || []).length ||
+      stored.plots.some(
+        (entry, index) => (result.plots[index] && result.plots[index].id) !== entry.id,
+      )
+    ) {
+      renderChart({ preserveView: true });
+      return;
+    }
+
+    for (const entry of stored.plots) {
+      const plot = result.plots.find((item) => item.id === entry.id);
+      if (!plot) {
+        renderChart({ preserveView: true });
+        return;
+      }
+
+      if (entry.columns) {
+        const points = [];
+        for (let i = 0; i < plot.values.length; i++) {
+          const value = plot.values[i];
+          if (!Number.isFinite(value)) continue;
+          points.push({
+            time: times[i],
+            value,
+            color: entry.color,
+          });
+        }
+        entry.series.setData(points);
+      } else {
+        entry.series.setData(lineData(times, plot.values));
+      }
+    }
+
+    if (stored.markerPrimitive) {
+      stored.markerPrimitive.setMarkers(collectPineMarkers(result));
     }
   }
 }
@@ -870,6 +1126,8 @@ function updateIndicators() {
     s.macdSignal.setData(lineData(times, result.signal));
     s.macdHist.setData(histogramData(times, result.histogram));
   }
+
+  updatePineSeries(times);
 }
 
 /* ------------------------------------------------------------------ data */
@@ -1521,9 +1779,37 @@ function renderIndicators() {
 
     el.indList.appendChild(label);
   }
+
+  if (!pine.scripts.length) return;
+
+  const group = document.createElement("div");
+  group.className = "ind-group";
+  group.textContent = "Мои скрипты";
+  el.indList.appendChild(group);
+
+  for (const script of pine.scripts) {
+    const compiled = pineCompiled(script);
+    const label = document.createElement("label");
+    label.className = "ind-row ind-pine";
+    label.title = script.name;
+    label.innerHTML =
+      `<input type="checkbox" data-pine="${script.id}" ${state.pineEnabled[script.id] ? "checked" : ""} />` +
+      `<span>${escapePineHtml(script.name)}</span>` +
+      (compiled.ok ? "" : `<em class="ind-badge">ошибка</em>`);
+
+    const input = label.querySelector("input");
+    input.addEventListener("change", () => {
+      state.pineEnabled[script.id] = input.checked;
+      saveSettings();
+      if (state.candles.length && state.LC) renderChart({ preserveView: true });
+    });
+
+    el.indList.appendChild(label);
+  }
 }
 
 function openIndicators() {
+  renderIndicators();
   el.indicatorsModal.classList.remove("hidden");
 }
 
@@ -1867,7 +2153,8 @@ function flushPineSave() {
   if (!script) return;
 
   const code = el.pineInput.value;
-  if (script.code !== code) {
+  const changed = script.code !== code;
+  if (changed) {
     script.code = code;
     script.updated = Date.now();
   }
@@ -1875,6 +2162,13 @@ function flushPineSave() {
   persistPine();
   setPineSaved("saved");
   updatePineMeta(script);
+
+  if (changed) {
+    renderIndicators();
+    if (state.pineEnabled[script.id] && state.candles.length && state.LC) {
+      renderChart({ preserveView: true });
+    }
+  }
 }
 
 function selectPine(id) {
@@ -1904,6 +2198,7 @@ function createPineScript(name, code) {
   pine.activeId = script.id;
   persistPine();
   renderPine();
+  renderIndicators();
   el.pineInput.focus({ preventScroll: true });
 
   return script;
@@ -1927,6 +2222,7 @@ function duplicatePineScript() {
   pine.activeId = copy.id;
   persistPine();
   renderPine();
+  renderIndicators();
   showToast("Скрипт дублирован");
 }
 
@@ -1946,8 +2242,14 @@ function deletePineScript() {
   const index = pine.scripts.findIndex((item) => item.id === script.id);
   pine.scripts.splice(index, 1);
   pine.activeId = pine.scripts[Math.min(index, pine.scripts.length - 1)].id;
+  delete state.pineEnabled[script.id];
+  delete pine.series[script.id];
+  pine.results.delete(script.id);
   persistPine();
+  saveSettings();
   renderPine();
+  renderIndicators();
+  if (state.candles.length && state.LC) renderChart({ preserveView: true });
   showToast("Скрипт удалён");
 }
 
@@ -1972,6 +2274,7 @@ function onPineNameBlur() {
   script.updated = Date.now();
   persistPine();
   renderPineList();
+  renderIndicators();
 }
 
 function pineFileName(name) {

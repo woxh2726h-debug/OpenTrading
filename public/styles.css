@@ -1213,6 +1213,33 @@ svg {
   cursor: pointer;
 }
 
+.ind-group {
+  margin: 10px 0 2px;
+  padding: 6px 10px 2px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ind-pine span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ind-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--down) 18%, transparent);
+  color: var(--down);
+  font-size: 10px;
+  font-style: normal;
+  letter-spacing: 0.02em;
+}
+
 .theme-card {
   padding: 16px;
   gap: 10px;
