@@ -35,6 +35,7 @@ const WL_SORTS = new Set(["manual", "change", "price", "name"]);
 
 const SETTINGS_KEY = "ot.settings.v1";
 const WATCHLIST_KEY = "ot.watchlist.v1";
+const PINE_KEY = "ot.pine.v1";
 const HISTORY_LIMIT = 600;
 
 const state = {
@@ -77,12 +78,21 @@ let searchTimer = null;
 let searchToken = 0;
 let searchResults = [];
 let searchIndex = 0;
+let toastTimer = 0;
+
+const pine = {
+  scripts: [],
+  activeId: null,
+  saveTimer: 0,
+  gutterLines: 0,
+};
 
 /* ------------------------------------------------------------------ boot */
 
 async function boot() {
   cacheElements();
   loadSettings();
+  loadPine();
   applyTheme();
   applySidebarState();
   el.wlFilter.value = state.wlFilter;
@@ -150,6 +160,23 @@ function cacheElements() {
     "themeModal",
     "themeGrid",
     "closeThemes",
+    "pineBtn",
+    "pineModal",
+    "pineCloseBtn",
+    "pineNewBtn",
+    "pineImportBtn",
+    "pineDuplicateBtn",
+    "pineDownloadBtn",
+    "pineDeleteBtn",
+    "pineName",
+    "pineSaved",
+    "pineCount",
+    "pineScripts",
+    "pineGutter",
+    "pineHighlight",
+    "pineInput",
+    "pineStats",
+    "pineFile",
     "toast",
   ];
 
@@ -1558,6 +1585,596 @@ function closeThemesModal() {
   el.themeModal.classList.add("hidden");
 }
 
+/* ------------------------------------------------------------ pine editor */
+
+const PINE_KEYWORDS = new Set([
+  "and", "as", "break", "by", "const", "continue", "else", "export", "false",
+  "for", "if", "import", "in", "method", "na", "not", "or", "return", "series",
+  "simple", "struct", "switch", "true", "type", "var", "varip", "while",
+]);
+
+const PINE_NAMESPACES = new Set([
+  "array", "barstate", "box", "chart", "color", "currency", "dayofweek",
+  "display", "format", "hline", "input", "label", "line", "location", "map",
+  "math", "matrix", "month", "position", "request", "runtime", "session",
+  "shape", "size", "str", "strategy", "syminfo", "table", "ta", "text",
+  "timeframe", "xloc", "yloc",
+]);
+
+const PINE_BUILTINS = new Set([
+  "alert", "alertcondition", "barcolor", "bgcolor", "close", "fill", "high",
+  "hl2", "hlc3", "hlcc4", "indicator", "library", "low", "nz", "open",
+  "plot", "plotarrow", "plotbar", "plotcandle", "plotchar", "plotshape",
+  "study",
+]);
+
+const PINE_TEMPLATE = `//@version=6
+indicator("Новый скрипт", overlay = true)
+
+// Набросок идеи. Код хранится локально и не исполняется.
+plot(close, "Close", color.blue)
+`;
+
+function pineDefaults() {
+  const now = Date.now();
+
+  return [
+    {
+      id: "s5-ema100",
+      name: "S5 — шорт у EMA100",
+      updated: now,
+      code: `//@version=6
+// S5 · шорт на отскоке к падающей EMA100 (4H)
+strategy("S5 — Short the rally", overlay = true, initial_capital = 1000)
+
+ema100 = ta.ema(close, 100)
+ema26  = ta.ema(close, 26)
+rsi14  = ta.rsi(close, 14)
+atr14  = ta.atr(14)
+
+falling = ema100 < ema100[10]
+below   = close < ema100
+rally   = high >= ema100 and high[1] < ema100[1]
+rsiCool = math.abs(rsi14 - 50) < math.abs(rsi14[1] - 50)
+daily   = request.security(syminfo.tickerid, "1D", ta.ema(close, 26))
+dailyOk = request.security(syminfo.tickerid, "1D", close) < daily
+
+setup = falling and below and rally and rsiCool and dailyOk
+
+plot(ema100, "EMA 100", color.orange, 2)
+plot(ema26, "EMA 26", color.new(color.blue, 40), 1)
+
+if setup
+    stop = ta.highest(high, 3) + atr14 * 0.3
+    risk = stop - close
+    strategy.entry("S5", strategy.short, qty = 1)
+    strategy.exit("S5 exit", "S5", stop = stop, limit = close - risk * 2)
+`,
+    },
+    {
+      id: "rsi-momentum",
+      name: "Импульс RSI",
+      updated: now,
+      code: `//@version=6
+indicator("Импульс RSI", overlay = false)
+
+len = input.int(14, "Период RSI", minval = 2)
+rsiValue = ta.rsi(close, len)
+basis = ta.sma(rsiValue, 20)
+
+bull = ta.crossover(rsiValue, basis) and rsiValue < 60
+bear = ta.crossunder(rsiValue, basis) and rsiValue > 40
+
+plot(rsiValue, "RSI", color = rsiValue >= 50 ? color.teal : color.red, linewidth = 2)
+plot(basis, "SMA 20", color.new(color.gray, 30))
+hline(70, "Перекупленность", color.new(color.red, 60), hline.style_dashed)
+hline(30, "Перепроданность", color.new(color.teal, 60), hline.style_dashed)
+
+plotshape(bull, "Long", shape.triangleup, location.belowbar, color.teal, size = size.tiny)
+plotshape(bear, "Short", shape.triangledown, location.abovebar, color.red, size = size.tiny)
+
+alertcondition(bull, "RSI bull", "RSI развернулся вверх")
+alertcondition(bear, "RSI bear", "RSI развернулся вниз")
+`,
+    },
+  ];
+}
+
+function pineId() {
+  return "pine-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+}
+
+function normalizePineRecord(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const code = typeof raw.code === "string" ? raw.code.slice(0, 200000) : "";
+  const name =
+    typeof raw.name === "string" && raw.name.trim()
+      ? raw.name.trim().slice(0, 60)
+      : "Без названия";
+  const id =
+    typeof raw.id === "string" && /^[a-z0-9-]{3,64}$/i.test(raw.id) ? raw.id : pineId();
+  const updated = Number(raw.updated) || Date.now();
+
+  return { id, name, code, updated };
+}
+
+function loadPine() {
+  const saved = store.get(PINE_KEY, null);
+  const scripts = [];
+
+  if (saved && Array.isArray(saved.scripts)) {
+    const seen = new Set();
+
+    for (const raw of saved.scripts.slice(0, 80)) {
+      const script = normalizePineRecord(raw);
+      if (!script || seen.has(script.id)) continue;
+      seen.add(script.id);
+      scripts.push(script);
+    }
+  }
+
+  pine.scripts = scripts.length ? scripts : pineDefaults();
+
+  const wanted = saved && typeof saved.activeId === "string" ? saved.activeId : "";
+  pine.activeId = pine.scripts.some((script) => script.id === wanted)
+    ? wanted
+    : pine.scripts[0].id;
+
+  persistPine();
+}
+
+function persistPine() {
+  store.set(PINE_KEY, {
+    activeId: pine.activeId,
+    scripts: pine.scripts.map(({ id, name, code, updated }) => ({ id, name, code, updated })),
+  });
+}
+
+function activePine() {
+  return pine.scripts.find((script) => script.id === pine.activeId) || pine.scripts[0] || null;
+}
+
+function pineLineCount(code) {
+  return code ? code.split("\n").length : 1;
+}
+
+function pineMeta(code) {
+  const lines = pineLineCount(code);
+  return `${lines} ${pluralRu(lines, "строка", "строки", "строк")}`;
+}
+
+function pluralRu(value, one, few, many) {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+function uniquePineName(base) {
+  const used = new Set(pine.scripts.map((script) => script.name.toLowerCase()));
+  if (!used.has(base.toLowerCase())) return base;
+
+  for (let i = 2; i < 200; i++) {
+    const candidate = `${base} ${i}`;
+    if (!used.has(candidate.toLowerCase())) return candidate.slice(0, 60);
+  }
+
+  return `${base} ${Date.now().toString(36)}`.slice(0, 60);
+}
+
+function renderPine() {
+  renderPineList();
+  renderPineEditor();
+}
+
+function renderPineList() {
+  el.pineCount.textContent = String(pine.scripts.length);
+  el.pineScripts.innerHTML = "";
+
+  for (const script of pine.scripts) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "pine-item" + (script.id === pine.activeId ? " active" : "");
+    item.dataset.id = script.id;
+    item.title = script.name;
+    if (script.id === pine.activeId) item.setAttribute("aria-current", "true");
+
+    const name = document.createElement("span");
+    name.className = "pine-item-name";
+    name.textContent = script.name;
+
+    const meta = document.createElement("span");
+    meta.className = "pine-item-meta";
+    meta.textContent = pineMeta(script.code);
+
+    item.append(name, meta);
+    el.pineScripts.appendChild(item);
+  }
+
+  if (!el.pineModal.classList.contains("hidden")) {
+    const active = el.pineScripts.querySelector(".pine-item.active");
+    if (active) active.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function renderPineEditor() {
+  const script = activePine();
+  if (!script) return;
+
+  el.pineName.value = script.name;
+  el.pineInput.value = script.code;
+  el.pineInput.scrollTop = 0;
+  el.pineInput.scrollLeft = 0;
+  renderPineHighlight();
+  setPineSaved("saved");
+  el.pineInput.focus({ preventScroll: true });
+}
+
+function renderPineHighlight() {
+  const code = el.pineInput.value;
+  const lines = pineLineCount(code);
+
+  el.pineHighlight.querySelector("code").innerHTML = highlightPine(code) + "\n";
+  el.pineStats.textContent = `Строк: ${lines} · Символов: ${code.length}`;
+  renderPineGutter(lines);
+}
+
+function renderPineGutter(lines) {
+  if (pine.gutterLines !== lines) {
+    pine.gutterLines = lines;
+    let html = "";
+    for (let i = 1; i <= lines; i++) html += `<span>${i}</span>`;
+    el.pineGutter.innerHTML = html;
+  }
+
+  syncPineScroll();
+}
+
+function syncPineScroll() {
+  const input = el.pineInput;
+  el.pineHighlight.scrollTop = input.scrollTop;
+  el.pineHighlight.scrollLeft = input.scrollLeft;
+  el.pineGutter.style.transform = `translateY(${-input.scrollTop}px)`;
+}
+
+function setPineSaved(mode) {
+  el.pineSaved.textContent = mode === "dirty" ? "Черновик" : "Сохранено";
+  el.pineSaved.className = "pine-saved " + (mode === "dirty" ? "dirty" : "ok");
+}
+
+function updatePineMeta(script) {
+  const meta = el.pineScripts.querySelector(`[data-id="${script.id}"] .pine-item-meta`);
+  if (meta) meta.textContent = pineMeta(script.code);
+}
+
+function onPineInput() {
+  if (!activePine()) return;
+
+  renderPineHighlight();
+  setPineSaved("dirty");
+
+  window.clearTimeout(pine.saveTimer);
+  pine.saveTimer = window.setTimeout(flushPineSave, 500);
+}
+
+function flushPineSave() {
+  window.clearTimeout(pine.saveTimer);
+  pine.saveTimer = 0;
+
+  const script = activePine();
+  if (!script) return;
+
+  const code = el.pineInput.value;
+  if (script.code !== code) {
+    script.code = code;
+    script.updated = Date.now();
+  }
+
+  persistPine();
+  setPineSaved("saved");
+  updatePineMeta(script);
+}
+
+function selectPine(id) {
+  if (id === pine.activeId) return;
+
+  const script = pine.scripts.find((item) => item.id === id);
+  if (!script) return;
+
+  flushPineSave();
+  pine.activeId = id;
+  persistPine();
+  renderPineList();
+  renderPineEditor();
+}
+
+function createPineScript(name, code) {
+  flushPineSave();
+
+  const script = {
+    id: pineId(),
+    name: uniquePineName(String(name || "Новый скрипт").trim().slice(0, 60)),
+    code: typeof code === "string" ? code : PINE_TEMPLATE,
+    updated: Date.now(),
+  };
+
+  pine.scripts.unshift(script);
+  pine.activeId = script.id;
+  persistPine();
+  renderPine();
+  el.pineInput.focus({ preventScroll: true });
+
+  return script;
+}
+
+function duplicatePineScript() {
+  flushPineSave();
+
+  const source = activePine();
+  if (!source) return;
+
+  const index = pine.scripts.findIndex((script) => script.id === source.id);
+  const copy = {
+    id: pineId(),
+    name: uniquePineName(`${source.name} — копия`.slice(0, 60)),
+    code: source.code,
+    updated: Date.now(),
+  };
+
+  pine.scripts.splice(index + 1, 0, copy);
+  pine.activeId = copy.id;
+  persistPine();
+  renderPine();
+  showToast("Скрипт дублирован");
+}
+
+function deletePineScript() {
+  const script = activePine();
+  if (!script) return;
+
+  if (pine.scripts.length <= 1) {
+    showToast("Последний скрипт удалять нельзя");
+    return;
+  }
+
+  if (!window.confirm(`Удалить «${script.name}»?`)) return;
+
+  window.clearTimeout(pine.saveTimer);
+
+  const index = pine.scripts.findIndex((item) => item.id === script.id);
+  pine.scripts.splice(index, 1);
+  pine.activeId = pine.scripts[Math.min(index, pine.scripts.length - 1)].id;
+  persistPine();
+  renderPine();
+  showToast("Скрипт удалён");
+}
+
+function onPineNameInput() {
+  const script = activePine();
+  if (!script) return;
+
+  script.name = el.pineName.value.slice(0, 60);
+  script.updated = Date.now();
+  persistPine();
+  renderPineList();
+  setPineSaved("saved");
+}
+
+function onPineNameBlur() {
+  const script = activePine();
+  if (!script) return;
+
+  const name = el.pineName.value.trim();
+  script.name = name || "Без названия";
+  el.pineName.value = script.name;
+  script.updated = Date.now();
+  persistPine();
+  renderPineList();
+}
+
+function pineFileName(name) {
+  const safe = String(name || "script")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+
+  return safe || "script";
+}
+
+function downloadPineScript() {
+  flushPineSave();
+
+  const script = activePine();
+  if (!script) return;
+
+  const blob = new Blob([script.code], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = `${pineFileName(script.name)}.pine`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast("Файл сохранён");
+}
+
+function importPineFile(file) {
+  if (!file) return;
+
+  if (file.size > 1024 * 1024) {
+    showToast("Файл больше 1 МБ");
+    return;
+  }
+
+  const reader = new FileReader();
+
+  reader.onload = () => {
+    const code = String(reader.result || "");
+    const name = (file.name || "").replace(/\.(pine|txt)$/i, "") || "Импорт";
+    createPineScript(name, code);
+    showToast(`Импортирован «${file.name || name}»`);
+  };
+
+  reader.onerror = () => showToast("Не удалось прочитать файл");
+  reader.readAsText(file);
+}
+
+function openPine() {
+  closeSearch();
+  closeIndicatorsModal();
+  closeThemesModal();
+  el.pineModal.classList.remove("hidden");
+  renderPine();
+}
+
+function closePine() {
+  if (el.pineModal.classList.contains("hidden")) return;
+
+  flushPineSave();
+  el.pineModal.classList.add("hidden");
+  el.pineBtn.focus({ preventScroll: true });
+}
+
+function togglePine() {
+  if (el.pineModal.classList.contains("hidden")) openPine();
+  else closePine();
+}
+
+function pineIndent(shift) {
+  const input = el.pineInput;
+  const value = input.value;
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+
+  if (!shift && start === end) {
+    input.setRangeText("    ", start, end, "end");
+    onPineInput();
+    return;
+  }
+
+  const blockStart = value.lastIndexOf("\n", start - 1) + 1;
+  let blockEnd = end;
+  if (blockEnd > blockStart && value[blockEnd - 1] === "\n") blockEnd -= 1;
+  if (blockEnd <= blockStart) blockEnd = value.length;
+
+  const block = value.slice(blockStart, blockEnd);
+  const lines = block.split("\n");
+  const nextLines = lines.map((line) =>
+    shift ? line.replace(/^( {1,4}|\t)/, "") : "    " + line,
+  );
+  const next = nextLines.join("\n");
+
+  if (next === block) return;
+
+  input.setRangeText(next, blockStart, blockEnd, "preserve");
+
+  const firstDelta = nextLines[0].length - lines[0].length;
+  const totalDelta = next.length - block.length;
+
+  if (value.slice(start, end).includes("\n")) {
+    const nextStart = Math.max(blockStart, start + firstDelta);
+    const nextEnd = Math.max(nextStart, end + totalDelta);
+    input.setSelectionRange(nextStart, nextEnd);
+  } else {
+    const caret = Math.max(blockStart, start + firstDelta);
+    input.setSelectionRange(caret, caret);
+  }
+
+  onPineInput();
+}
+
+function pineNewline() {
+  const input = el.pineInput;
+  const value = input.value;
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  const line = value.slice(lineStart, start);
+  const leading = (line.match(/^[ \t]*/) || [""])[0];
+  const trimmed = line.trim();
+  const opensBlock =
+    /=>$/.test(trimmed) ||
+    /^(if|else|for|while|switch)\b/.test(trimmed) ||
+    /^(type|method|struct)\b/.test(trimmed);
+
+  input.setRangeText("\n" + leading + (opensBlock ? "    " : ""), start, end, "end");
+  onPineInput();
+}
+
+function onPineKeyDown(event) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    flushPineSave();
+    return;
+  }
+
+  if (event.key === "Tab") {
+    event.preventDefault();
+    pineIndent(event.shiftKey);
+    return;
+  }
+
+  if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    pineNewline();
+    return;
+  }
+
+  if (event.key === "Escape") {
+    event.stopPropagation();
+    closePine();
+  }
+}
+
+function escapePineHtml(text) {
+  return text.replace(/[&<>]/g, (ch) =>
+    ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : "&gt;",
+  );
+}
+
+function highlightPine(code) {
+  if (code.length > 80000) return escapePineHtml(code);
+
+  const tokenPattern =
+    /\/\/@[^\n]*|\/\/[^\n]*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|@[A-Za-z_][A-Za-z0-9_]*|\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|[A-Za-z_][A-Za-z0-9_]*|[\s\S]/g;
+
+  let html = "";
+  let match = tokenPattern.exec(code);
+
+  while (match) {
+    const token = match[0];
+    let className = "";
+
+    if (token.startsWith("//")) {
+      className = token.startsWith("//@") ? "meta" : "com";
+    } else if (token.startsWith('"') || token.startsWith("'")) {
+      className = "str";
+    } else if (token.startsWith("@")) {
+      className = "meta";
+    } else if (/^\d/.test(token)) {
+      className = "num";
+    } else if (/^[A-Za-z_]/.test(token)) {
+      if (PINE_KEYWORDS.has(token)) className = "kw";
+      else if (PINE_NAMESPACES.has(token)) className = "ns";
+      else if (PINE_BUILTINS.has(token)) className = "fn";
+      else if (code[tokenPattern.lastIndex] === "(") className = "fn";
+    } else if (/^[+\-*/%<>=!?:.]$/.test(token)) {
+      className = "op";
+    }
+
+    const safe = escapePineHtml(token);
+    html += className ? `<span class="t-${className}">${safe}</span>` : safe;
+    match = tokenPattern.exec(code);
+  }
+
+  return html;
+}
+
 /* ---------------------------------------------------------------- status */
 
 function setConn(status) {
@@ -1743,6 +2360,47 @@ function bindUi() {
     }
   });
 
+  el.pineBtn.addEventListener("click", openPine);
+  el.pineCloseBtn.addEventListener("click", closePine);
+  el.pineModal.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.dataset.close === "pine") closePine();
+  });
+
+  el.pineScripts.addEventListener("click", (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest("button[data-id]")
+      : null;
+    if (button) selectPine(button.dataset.id);
+  });
+
+  el.pineInput.addEventListener("input", onPineInput);
+  el.pineInput.addEventListener("keydown", onPineKeyDown);
+  el.pineInput.addEventListener("scroll", syncPineScroll, { passive: true });
+
+  el.pineName.addEventListener("input", onPineNameInput);
+  el.pineName.addEventListener("blur", onPineNameBlur);
+  el.pineName.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      el.pineInput.focus();
+    }
+  });
+
+  el.pineNewBtn.addEventListener("click", () => {
+    createPineScript(`Скрипт ${pine.scripts.length + 1}`, PINE_TEMPLATE);
+    showToast("Новый скрипт создан");
+  });
+  el.pineDuplicateBtn.addEventListener("click", duplicatePineScript);
+  el.pineDeleteBtn.addEventListener("click", deletePineScript);
+  el.pineDownloadBtn.addEventListener("click", downloadPineScript);
+
+  el.pineImportBtn.addEventListener("click", () => el.pineFile.click());
+  el.pineFile.addEventListener("change", () => {
+    const file = el.pineFile.files && el.pineFile.files[0];
+    el.pineFile.value = "";
+    importPineFile(file);
+  });
+
   document.addEventListener("keydown", onKeyDown);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
@@ -1753,15 +2411,31 @@ function bindUi() {
 }
 
 function onKeyDown(event) {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
+    event.preventDefault();
+    togglePine();
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "s") {
+    if (!el.pineModal.classList.contains("hidden")) {
+      event.preventDefault();
+      flushPineSave();
+      return;
+    }
+  }
+
   if (event.key === "Escape") {
     closeSearch();
     closeIndicatorsModal();
     closeThemesModal();
+    closePine();
     return;
   }
 
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
+    if (!el.pineModal.classList.contains("hidden")) return;
     openSearch();
     return;
   }
@@ -1838,6 +2512,16 @@ function showError(message) {
 
 function hideError() {
   el.chartError.classList.add("hidden");
+}
+
+function showToast(message) {
+  if (!el.toast) return;
+
+  el.toast.textContent = message;
+  el.toast.classList.remove("hidden");
+
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => el.toast.classList.add("hidden"), 2400);
 }
 
 /* ------------------------------------------------------------------ start */

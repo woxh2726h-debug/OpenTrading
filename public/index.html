@@ -64,6 +64,20 @@
 
         <button
           class="icon-btn"
+          id="pineBtn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-label="Редактор Pine Script"
+          title="Pine Script (Ctrl+Shift+P)"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 6 4 12l5 6" />
+            <path d="m15 6 5 6-5 6" />
+          </svg>
+        </button>
+
+        <button
+          class="icon-btn"
           id="themeBtn"
           type="button"
           aria-haspopup="dialog"
@@ -235,6 +249,116 @@
         <p class="hint">Применяется сразу. Выбор сохраняется в браузере.</p>
         <div class="theme-grid" id="themeGrid"></div>
         <button class="btn primary wide" id="closeThemes" type="button">Готово</button>
+      </div>
+    </div>
+
+    <div
+      class="modal hidden"
+      id="pineModal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Редактор Pine Script"
+    >
+      <div class="modal-backdrop" data-close="pine"></div>
+      <div class="modal-card pine-card">
+        <header class="pine-head">
+          <div class="pine-title">
+            <span class="pine-logo" aria-hidden="true">P</span>
+            <div>
+              <h3>Pine Script</h3>
+              <p class="hint">Редактор скриптов · v6 · хранит код, но не исполняет его</p>
+            </div>
+          </div>
+          <div class="pine-head-actions">
+            <button class="btn" id="pineImportBtn" type="button" title="Импортировать файл .pine">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 16V4" />
+                <path d="m7 9 5-5 5 5" />
+                <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+              </svg>
+              <span>Импорт</span>
+            </button>
+            <button class="btn primary" id="pineNewBtn" type="button" title="Новый скрипт">
+              <span>+ Скрипт</span>
+            </button>
+            <button class="icon-btn" id="pineCloseBtn" type="button" aria-label="Закрыть">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m6 6 12 12M18 6 6 18" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="pine-body">
+          <aside class="pine-list" aria-label="Сохранённые скрипты">
+            <div class="pine-list-head">
+              <span>Мои скрипты</span>
+              <span class="pine-count" id="pineCount">0</span>
+            </div>
+            <div class="pine-scripts" id="pineScripts"></div>
+            <p class="pine-list-note">Хранятся в этом браузере</p>
+          </aside>
+
+          <section class="pine-work">
+            <div class="pine-filebar">
+              <input
+                class="pine-name"
+                id="pineName"
+                type="text"
+                maxlength="60"
+                aria-label="Имя скрипта"
+                spellcheck="false"
+                autocomplete="off"
+              />
+              <span class="pine-saved" id="pineSaved">Сохранено</span>
+              <div class="pine-file-actions">
+                <button class="icon-btn small" id="pineDuplicateBtn" type="button" aria-label="Дублировать" title="Дублировать">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9" y="9" width="11" height="11" rx="2" />
+                    <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+                  </svg>
+                </button>
+                <button class="icon-btn small" id="pineDownloadBtn" type="button" aria-label="Скачать .pine" title="Скачать .pine">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 4v12" />
+                    <path d="m7 11 5 5 5-5" />
+                    <path d="M4 20h16" />
+                  </svg>
+                </button>
+                <button class="icon-btn small danger" id="pineDeleteBtn" type="button" aria-label="Удалить скрипт" title="Удалить скрипт">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h16" />
+                    <path d="M9 7V5h6v2" />
+                    <path d="M6 7l1 13h10l1-13" />
+                    <path d="M10 11v6M14 11v6" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="pine-editor" id="pineEditor">
+              <div class="pine-gutter" aria-hidden="true"><div id="pineGutter"></div></div>
+              <div class="pine-scroll">
+                <pre class="pine-highlight" id="pineHighlight" aria-hidden="true"><code></code></pre>
+                <textarea
+                  class="pine-input"
+                  id="pineInput"
+                  spellcheck="false"
+                  wrap="off"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  aria-label="Код Pine Script"
+                ></textarea>
+              </div>
+            </div>
+
+            <footer class="pine-foot">
+              <span id="pineStats">0 строк · 0 символов</span>
+              <span class="pine-warn">Не исполняется: это хранилище идей, а не движок Pine</span>
+            </footer>
+            <input type="file" id="pineFile" accept=".pine,.txt,text/plain" class="hidden" />
+          </section>
+        </div>
       </div>
     </div>
 
