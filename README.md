@@ -80,6 +80,20 @@ npx wrangler login
 npm run deploy
 ```
 
+### Из локальной папки
+
+В корне репозитория есть `deploy.ps1`: он коммитит изменения и пушит их в
+`main`, после чего Cloudflare Workers Builds пересобирает и деплоит сайт.
+
+```powershell
+.\deploy.ps1 -Message "feat: ..."
+```
+
+После обычного `git commit` то же самое делает хук `.git/hooks/post-commit`
+(лог — `.git/auto-deploy.log`). Отключить автопуш:
+`git config --local hooks.autoDeploy false`. Если пуш не удался (нет сети,
+истёк токен), коммит остаётся локально — достаточно повторить `.\deploy.ps1`.
+
 ## Опционально: D1 для вотчлиста
 
 Без D1 вотчлист хранится в браузере (`localStorage`), и API отвечает `storage: "local"`.
