@@ -9,6 +9,19 @@
       content="Графики в стиле TradingView на Cloudflare Workers: свечи, индикаторы, список наблюдения и живые данные Binance."
     />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      // Apply the saved theme before the first paint so the page does not
+      // flash the default palette while app.js is loading.
+      try {
+        var savedSettings = JSON.parse(localStorage.getItem("ot.settings.v1") || "null");
+        var knownThemes = ["dark", "light", "win95", "mango", "nord", "terminal"];
+        if (savedSettings && knownThemes.indexOf(savedSettings.theme) >= 0) {
+          document.documentElement.dataset.theme = savedSettings.theme;
+        }
+      } catch (error) {
+        /* private mode or broken storage: keep the default theme */
+      }
+    </script>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/vendor/lightweight-charts.js" defer></script>
     <script type="module" src="/app.js"></script>
@@ -417,6 +430,7 @@
             Открыть бота в Telegram
           </a>
           <p class="tg-note" id="tgPendingNote">Ждём подтверждения…</p>
+          <button class="btn wide" id="tgCheckBtn" type="button">Я подтвердил — проверить</button>
         </div>
 
         <div class="tg-block hidden" id="tgLinked">

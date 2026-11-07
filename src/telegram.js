@@ -377,26 +377,31 @@ async function handleHook(request, env, id) {
 
   if (message && typeof message.text === "string") {
     const chatId = String(message.chat.id);
-    const [, code] = message.text.trim().split(/\s+/);
+    const command = String(message.text).trim().split(/\s+/)[0].split("@")[0];
 
-    if (message.text.startsWith("/start") && row.start_code && code === row.start_code) {
-      await telegram(token, "sendMessage", {
-        chat_id: chatId,
-        text: `Подключить бота @${row.bot_username} к OpenTrading?`,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "✅ Подтвердить", callback_data: `ok:${row.id}` },
-              { text: "❌ Отмена", callback_data: `no:${row.id}` },
+    if (command === "/start") {
+      if (row.status === "linked") {
+        await telegram(token, "sendMessage", {
+          chat_id: chatId,
+          text:
+            row.chat_id === chatId
+              ? "Бот уже подключён к OpenTrading — уведомления придут сюда."
+              : "Этот бот уже привязан к другому чату. Отвяжите его в настройках OpenTrading.",
+        });
+      } else {
+        await telegram(token, "sendMessage", {
+          chat_id: chatId,
+          text: `Подключить бота @${row.bot_username} к OpenTrading?`,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "✅ Подтвердить", callback_data: `ok:${row.id}` },
+                { text: "❌ Отмена", callback_data: `no:${row.id}` },
+              ],
             ],
-          ],
-        },
-      });
-    } else if (message.text.startsWith("/start")) {
-      await telegram(token, "sendMessage", {
-        chat_id: chatId,
-        text: "Откройте OpenTrading, вставьте токен бота в «Уведомления» и нажмите кнопку подключения — я пришлю подтверждение.",
-      });
+          },
+        });
+      }
     }
   }
 
@@ -407,6 +412,15 @@ async function handleHook(request, env, id) {
     const chatId = String(query.message.chat && query.message.chat.id);
 
     if (data === `ok:${row.id}`) {
+      if (row.status === "linked" && row.chat_id && row.chat_id !== chatId) {
+        await telegram(token, "answerCallbackQuery", {
+          callback_query_id: query.id,
+          text: "Бот уже привязан к другому чату",
+          show_alert: true,
+        });
+        return json({ ok: true });
+      }
+
       await env.DB.prepare(
         "UPDATE tg_bots SET status = 'linked', chat_id = ?, linked_at = ? WHERE id = ?",
       )

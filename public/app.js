@@ -176,6 +176,7 @@ function cacheElements() {
     "tgPending",
     "tgDeepLink",
     "tgPendingNote",
+    "tgCheckBtn",
     "tgLinked",
     "tgBotName",
     "tgChatId",
@@ -2204,6 +2205,7 @@ function openNotify() {
 }
 
 function closeNotify() {
+  if (!el.notifyModal) return;
   el.notifyModal.classList.add("hidden");
   stopTelegramPoll();
 }
@@ -3108,17 +3110,20 @@ function bindUi() {
   el.themeBtn.addEventListener("click", openThemes);
   el.closeThemes.addEventListener("click", closeThemesModal);
 
-  el.notifyBtn.addEventListener("click", openNotify);
-  el.closeNotify.addEventListener("click", closeNotify);
-  el.notifyModal.addEventListener("click", (event) => {
-    if (event.target instanceof Element && event.target.dataset.close === "notify") closeNotify();
-  });
-  el.tgConnectBtn.addEventListener("click", connectTelegram);
-  el.tgTestBtn.addEventListener("click", testTelegram);
-  el.tgUnlinkBtn.addEventListener("click", unlinkTelegram);
-  el.tgToken.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") connectTelegram();
-  });
+  if (el.notifyBtn) {
+    el.notifyBtn.addEventListener("click", openNotify);
+    el.closeNotify.addEventListener("click", closeNotify);
+    el.notifyModal.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.dataset.close === "notify") closeNotify();
+    });
+    el.tgConnectBtn.addEventListener("click", connectTelegram);
+    el.tgCheckBtn.addEventListener("click", pollTelegram);
+    el.tgTestBtn.addEventListener("click", testTelegram);
+    el.tgUnlinkBtn.addEventListener("click", unlinkTelegram);
+    el.tgToken.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") connectTelegram();
+    });
+  }
   el.themeModal.addEventListener("click", (event) => {
     if (event.target instanceof Element && event.target.dataset.close === "theme") {
       closeThemesModal();
