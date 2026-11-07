@@ -822,7 +822,7 @@ function buildIndicatorSeries(chart, colors, times) {
       index += 1;
     }
     while (index < panes.length) {
-      panes[index].setStretchFactor(0.34);
+      panes[index].setStretchFactor(0.5);
       index += 1;
     }
   }
@@ -950,30 +950,197 @@ function pineHistogramPoints(times, plot, fallback) {
   return out;
 }
 
+// TradingView draws plot.style_columns / plot.style_histogram as bars that fill
+// the whole slot, so adjacent columns touch and form a solid shape. The
+// lightweight-charts histogram series keeps a visible gap, which made the
+// oscillator look sparse. A tiny primitive draws the bars at full width and
+// keeps the per-bar colours.
+class PineBarsPrimitive {
+  constructor(points) {
+    this.points = points;
+    this.series = null;
+    this.chart = null;
+    this.requestUpdate = null;
+    this.view = { renderer: () => this };
+  }
+
+  attached(param) {
+    this.series = param.series;
+    this.chart = param.chart;
+    this.requestUpdate = typeof param.requestUpdate === "function" ? param.requestUpdate : null;
+  }
+
+  detached() {
+    this.series = null;
+    this.chart = null;
+  }
+
+  updateAllViews() {}
+
+  paneViews() {
+    return [this.view];
+  }
+
+  setPoints(points) {
+    this.points = points;
+    if (this.requestUpdate) this.requestUpdate();
+  }
+
+  draw(target) {
+    const series = this.series;
+    const chart = this.chart;
+    if (!series || !chart || !this.points.length) return;
+
+    const timeScale = chart.timeScale();
+    const barSpacing = timeScale.options().barSpacing || 6;
+
+    target.useBitmapCoordinateSpace((scope) => {
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+      const zeroY = series.priceToCoordinate(0);
+
+      if (zeroY == null) return;
+
+      const width = Math.max(1, Math.round(barSpacing * hr));
+
+      for (const point of this.points) {
+        const x = timeScale.timeToCoordinate(point.time);
+        if (x == null) continue;
+
+        const y = series.priceToCoordinate(point.value);
+        if (y == null) continue;
+
+        const top = Math.min(y, zeroY);
+        const height = Math.abs(y - zeroY);
+
+        ctx.fillStyle = point.color;
+        ctx.fillRect(
+          Math.round(x * hr - width / 2),
+          Math.round(top * vr),
+          width,
+          Math.max(1, Math.round(height * vr)),
+        );
+      }
+    });
+  }
+}
+
+// Per-bar coloured lines (e.g. "WT Line" turning green/red) cannot be done
+// with a single series, and splitting into many series breaks down once the
+// colour changes often. This primitive draws the polyline segment by segment
+// with its own colour, which is exactly what TradingView does.
+class PineLinePrimitive {
+  constructor(points, width, dash) {
+    this.points = points;
+    this.width = width;
+    this.dash = dash;
+    this.series = null;
+    this.chart = null;
+    this.requestUpdate = null;
+    this.view = { renderer: () => this };
+  }
+
+  attached(param) {
+    this.series = param.series;
+    this.chart = param.chart;
+    this.requestUpdate = typeof param.requestUpdate === "function" ? param.requestUpdate : null;
+  }
+
+  detached() {
+    this.series = null;
+    this.chart = null;
+  }
+
+  updateAllViews() {}
+
+  paneViews() {
+    return [this.view];
+  }
+
+  setPoints(points) {
+    this.points = points;
+    if (this.requestUpdate) this.requestUpdate();
+  }
+
+  draw(target) {
+    const series = this.series;
+    const chart = this.chart;
+    if (!series || !chart || this.points.length < 2) return;
+
+    const timeScale = chart.timeScale();
+
+    target.useBitmapCoordinateSpace((scope) => {
+      const ctx = scope.context;
+      const hr = scope.horizontalPixelRatio;
+      const vr = scope.verticalPixelRatio;
+
+      ctx.lineWidth = Math.max(1, Math.round(this.width * hr));
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.setLineDash((this.dash || []).map((value) => value * hr));
+
+      let previous = null;
+
+      for (const point of this.points) {
+        const x = timeScale.timeToCoordinate(point.time);
+        const y = series.priceToCoordinate(point.value);
+
+        if (x == null || y == null) {
+          previous = null;
+          continue;
+        }
+
+        const current = { x: x * hr, y: y * vr };
+
+        if (previous) {
+          ctx.beginPath();
+          ctx.strokeStyle = point.color;
+          ctx.moveTo(previous.x, previous.y);
+          ctx.lineTo(current.x, current.y);
+          ctx.stroke();
+        }
+
+        previous = current;
+      }
+    });
+  }
+}
+
 function addPinePlot(chart, LC, pane, plot, times, colors, order) {
   const fallback = pinePlotColor(colors, order, plot.color);
   const width = Math.max(1, Math.min(4, plot.width || 1));
   const lineStyle = pineLineStyle(LC, plot.style);
 
   if (isPineColumns(plot.style)) {
+    const points = pineHistogramPoints(times, plot, fallback);
     const series = chart.addSeries(
       LC.HistogramSeries,
       {
-        color: fallback,
+        color: "rgba(0, 0, 0, 0)",
         priceLineVisible: false,
         lastValueVisible: false,
       },
       pane,
     );
-    series.setData(pineHistogramPoints(times, plot, fallback));
-    return { id: plot.id, order, kind: "hist", series, parts: [{ series, color: fallback }] };
+    series.setData(points.map((point) => ({ time: point.time, value: point.value })));
+    const primitive = new PineBarsPrimitive(points);
+    series.attachPrimitive(primitive);
+    return {
+      id: plot.id,
+      order,
+      kind: "hist",
+      series,
+      primitive,
+      parts: [{ series, color: fallback }],
+    };
   }
 
-  let runs = pineLineRuns(plot.values, plot.colors, fallback);
-  if (runs.length > PINE_MAX_RUNS) runs = [];
+  const linePoints = pineHistogramPoints(times, plot, fallback);
+  const distinct = new Set(linePoints.map((point) => point.color)).size;
 
-  if (runs.length <= 1) {
-    const color = runs[0] ? runs[0].color : fallback;
+  if (distinct <= 1) {
+    const color = linePoints.length ? linePoints[0].color : fallback;
     const series = chart.addSeries(
       LC.LineSeries,
       {
@@ -996,24 +1163,29 @@ function addPinePlot(chart, LC, pane, plot, times, colors, order) {
     };
   }
 
-  const parts = runs.map((run) => {
-    const series = chart.addSeries(
-      LC.LineSeries,
-      {
-        color: run.color,
-        lineWidth: width,
-        lineStyle,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      },
-      pane,
-    );
-    series.setData(pineLineRunData(times, plot.values, run.from, run.to));
-    return { series, color: run.color, from: run.from, to: run.to };
-  });
+  const series = chart.addSeries(
+    LC.LineSeries,
+    {
+      color: "rgba(0, 0, 0, 0)",
+      lineWidth: width,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    },
+    pane,
+  );
+  series.setData(lineData(times, plot.values));
 
-  return { id: plot.id, order, kind: "line", series: parts[0].series, parts };
+  const primitive = new PineLinePrimitive(linePoints, width, pineDashPattern(lineStyle, LC));
+  series.attachPrimitive(primitive);
+
+  return { id: plot.id, order, kind: "line", series, primitive, parts: [{ series, color: fallback }] };
+}
+
+function pineDashPattern(style, LC) {
+  if (style === LC.LineStyle.Dashed) return [4, 4];
+  if (style === LC.LineStyle.Dotted) return [1, 3];
+  return [];
 }
 
 function buildPineSeries(chart, colors, times, firstPane) {
@@ -1097,7 +1269,15 @@ function updatePineSeries(times) {
       const fallback = pinePlotColor(state.palette || chartColors(), entry.order, plot.color);
 
       if (entry.kind === "hist") {
-        entry.parts[0].series.setData(pineHistogramPoints(times, plot, fallback));
+        const points = pineHistogramPoints(times, plot, fallback);
+        entry.parts[0].series.setData(points.map((point) => ({ time: point.time, value: point.value })));
+        if (entry.primitive) entry.primitive.setPoints(points);
+        continue;
+      }
+
+      if (entry.primitive) {
+        entry.parts[0].series.setData(lineData(times, plot.values));
+        entry.primitive.setPoints(pineHistogramPoints(times, plot, fallback));
         continue;
       }
 
