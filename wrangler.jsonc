@@ -9,20 +9,17 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
-  }
+  },
+
+  // Required for Telegram notifications and the optional server watchlist.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "opentrading",
+      "database_id": "30359616-f63c-4bc5-b0f8-36fb9fe891be"
+    }
+  ]
 
   // --- Optional: persistent watchlist -------------------------------------
-  // 1. npx wrangler d1 create opentrading
-  // 2. Copy the returned database_id below and uncomment the block.
-  // 3. npx wrangler d1 execute opentrading --remote --file=./schema.sql
-  //
-  // Without D1 the app stores the watchlist in localStorage instead.
-  //
-  // "d1_databases": [
-  //   {
-  //     "binding": "DB",
-  //     "database_name": "opentrading",
-  //     "database_id": "00000000-0000-0000-0000-000000000000"
-  //   }
-  // ]
+  // Tables are created by the Worker on first use, no migrations needed.
 }

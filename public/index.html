@@ -78,6 +78,20 @@
 
         <button
           class="icon-btn"
+          id="notifyBtn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-label="Уведомления в Telegram"
+          title="Уведомления в Telegram"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+          </svg>
+        </button>
+
+        <button
+          class="icon-btn"
           id="themeBtn"
           type="button"
           aria-haspopup="dialog"
@@ -359,6 +373,66 @@
             <input type="file" id="pineFile" accept=".pine,.txt,text/plain" class="hidden" />
           </section>
         </div>
+      </div>
+    </div>
+
+    <div
+      class="modal hidden"
+      id="notifyModal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Уведомления в Telegram"
+    >
+      <div class="modal-backdrop" data-close="notify"></div>
+      <div class="modal-card notify-card">
+        <h3>Уведомления в Telegram</h3>
+        <p class="hint">
+          Свой бот у каждого: токен хранится на сервере зашифрованно, вход — по нему.
+        </p>
+
+        <div class="tg-loading" id="tgLoading">Проверяем подключение…</div>
+
+        <div class="tg-block hidden" id="tgUnlinked">
+          <label class="tg-field">
+            <span>Токен бота</span>
+            <input
+              id="tgToken"
+              type="text"
+              placeholder="123456789:AAH…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+          <p class="tg-note">Токен выдаёт @BotFather. Бот пишет только тем, кто нажал Start.</p>
+          <button class="btn primary wide" id="tgConnectBtn" type="button">Подключить бота</button>
+          <p class="tg-error hidden" id="tgError"></p>
+        </div>
+
+        <div class="tg-block hidden" id="tgPending">
+          <p class="tg-steps">
+            1. Откройте бота и нажмите <b>Start</b>.<br />
+            2. Подтвердите привязку кнопкой в чате.
+          </p>
+          <a class="btn primary wide" id="tgDeepLink" href="#" target="_blank" rel="noopener">
+            Открыть бота в Telegram
+          </a>
+          <p class="tg-note" id="tgPendingNote">Ждём подтверждения…</p>
+        </div>
+
+        <div class="tg-block hidden" id="tgLinked">
+          <div class="tg-bot">
+            <i class="tg-dot"></i>
+            <b id="tgBotName">@bot</b>
+            <span class="tg-chat" id="tgChatId"></span>
+          </div>
+          <div class="tg-actions">
+            <button class="btn" id="tgTestBtn" type="button">Тестовое сообщение</button>
+            <button class="btn danger" id="tgUnlinkBtn" type="button">Отвязать</button>
+          </div>
+          <p class="tg-note">Правила уведомлений появятся на следующем шаге.</p>
+        </div>
+
+        <button class="btn primary wide" id="closeNotify" type="button">Готово</button>
       </div>
     </div>
 

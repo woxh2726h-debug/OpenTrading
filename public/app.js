@@ -166,6 +166,22 @@ function cacheElements() {
     "themeModal",
     "themeGrid",
     "closeThemes",
+    "notifyBtn",
+    "notifyModal",
+    "tgLoading",
+    "tgUnlinked",
+    "tgToken",
+    "tgConnectBtn",
+    "tgError",
+    "tgPending",
+    "tgDeepLink",
+    "tgPendingNote",
+    "tgLinked",
+    "tgBotName",
+    "tgChatId",
+    "tgTestBtn",
+    "tgUnlinkBtn",
+    "closeNotify",
     "pineBtn",
     "pineModal",
     "pineCloseBtn",
@@ -2173,6 +2189,157 @@ function openThemes() {
   el.themeModal.classList.remove("hidden");
 }
 
+/* -------------------------------------------------------- telegram alerts */
+
+const telegram = {
+  code: "",
+  poll: 0,
+  busy: false,
+};
+
+function openNotify() {
+  el.notifyModal.classList.remove("hidden");
+  el.tgError.classList.add("hidden");
+  refreshTelegram();
+}
+
+function closeNotify() {
+  el.notifyModal.classList.add("hidden");
+  stopTelegramPoll();
+}
+
+function stopTelegramPoll() {
+  if (telegram.poll) window.clearTimeout(telegram.poll);
+  telegram.poll = 0;
+}
+
+function tgShow(mode) {
+  el.tgLoading.classList.toggle("hidden", mode !== "loading");
+  el.tgUnlinked.classList.toggle("hidden", mode !== "unlinked");
+  el.tgPending.classList.toggle("hidden", mode !== "pending");
+  el.tgLinked.classList.toggle("hidden", mode !== "linked");
+}
+
+async function tgRequest(path, options) {
+  try {
+    const response = await fetch(path, {
+      headers: { "content-type": "application/json" },
+      ...options,
+    });
+    const data = await response.json().catch(() => ({}));
+    return { ok: response.ok, data: data || {} };
+  } catch {
+    return { ok: false, data: { error: "network" } };
+  }
+}
+
+function showLinkedBot(data) {
+  el.tgBotName.textContent = data.botUsername ? `@${data.botUsername}` : "бот подключён";
+  el.tgChatId.textContent = data.chatId ? `чат ${data.chatId}` : "";
+  tgShow("linked");
+}
+
+async function refreshTelegram() {
+  tgShow("loading");
+  const { data } = await tgRequest("/api/telegram/session");
+
+  if (data.linked) {
+    showLinkedBot(data);
+    return;
+  }
+
+  tgShow("unlinked");
+}
+
+function tgErrorMessage(data) {
+  if (data.error === "invalid_token") return "Telegram не принял токен. Проверьте его в @BotFather.";
+  if (data.error === "d1_required") return "Сервер ещё не подключён к базе данных.";
+  if (data.error === "network") return "Нет связи с сервером. Попробуйте ещё раз.";
+  return "Не получилось подключить бота. Попробуйте ещё раз.";
+}
+
+async function connectTelegram() {
+  if (telegram.busy) return;
+
+  const token = el.tgToken.value.trim();
+  if (!token) {
+    el.tgError.textContent = "Вставьте токен бота.";
+    el.tgError.classList.remove("hidden");
+    return;
+  }
+
+  telegram.busy = true;
+  el.tgConnectBtn.disabled = true;
+  el.tgError.classList.add("hidden");
+
+  const { ok, data } = await tgRequest("/api/telegram/check", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+
+  telegram.busy = false;
+  el.tgConnectBtn.disabled = false;
+
+  if (!ok) {
+    el.tgError.textContent = tgErrorMessage(data);
+    el.tgError.classList.remove("hidden");
+    return;
+  }
+
+  if (data.linked) {
+    showLinkedBot(data);
+    return;
+  }
+
+  telegram.code = data.code || "";
+  el.tgDeepLink.href = data.deepLink;
+  el.tgPendingNote.textContent = "Ждём подтверждения в Telegram…";
+  tgShow("pending");
+  pollTelegram();
+}
+
+async function pollTelegram() {
+  stopTelegramPoll();
+
+  if (!telegram.code) return;
+
+  const { data } = await tgRequest(
+    `/api/telegram/status?code=${encodeURIComponent(telegram.code)}`,
+  );
+
+  if (data.linked) {
+    telegram.code = "";
+    showLinkedBot(data);
+    showToast("Бот подключён");
+    return;
+  }
+
+  telegram.poll = window.setTimeout(pollTelegram, 2500);
+}
+
+async function testTelegram() {
+  el.tgTestBtn.disabled = true;
+  const { ok, data } = await tgRequest("/api/telegram/test", { method: "POST" });
+  el.tgTestBtn.disabled = false;
+
+  showToast(ok ? "Сообщение отправлено" : tgErrorMessage(data));
+}
+
+async function unlinkTelegram() {
+  if (!window.confirm("Отвязать бота? Токен будет удалён с сервера.")) return;
+
+  const { ok } = await tgRequest("/api/telegram/unlink", { method: "POST" });
+  if (!ok) {
+    showToast("Не удалось отвязать бота");
+    return;
+  }
+
+  telegram.code = "";
+  el.tgToken.value = "";
+  tgShow("unlinked");
+  showToast("Бот отвязан");
+}
+
 function closeThemesModal() {
   el.themeModal.classList.add("hidden");
 }
@@ -2940,6 +3107,18 @@ function bindUi() {
 
   el.themeBtn.addEventListener("click", openThemes);
   el.closeThemes.addEventListener("click", closeThemesModal);
+
+  el.notifyBtn.addEventListener("click", openNotify);
+  el.closeNotify.addEventListener("click", closeNotify);
+  el.notifyModal.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.dataset.close === "notify") closeNotify();
+  });
+  el.tgConnectBtn.addEventListener("click", connectTelegram);
+  el.tgTestBtn.addEventListener("click", testTelegram);
+  el.tgUnlinkBtn.addEventListener("click", unlinkTelegram);
+  el.tgToken.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") connectTelegram();
+  });
   el.themeModal.addEventListener("click", (event) => {
     if (event.target instanceof Element && event.target.dataset.close === "theme") {
       closeThemesModal();
@@ -3058,6 +3237,7 @@ function onKeyDown(event) {
     closeSearch();
     closeIndicatorsModal();
     closeThemesModal();
+    closeNotify();
     closePine();
     return;
   }

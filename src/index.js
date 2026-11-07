@@ -8,6 +8,7 @@ import {
   parseSymbol,
 } from "./market.js";
 import { getSymbolList, searchSymbols } from "./symbols.js";
+import { handleTelegram } from "./telegram.js";
 import { handleWatchlist } from "./watchlist.js";
 
 function intParam(value, fallback) {
@@ -143,6 +144,9 @@ async function routeApi(request, env, url) {
 
   const watchlist = await handleWatchlist(request, env, url);
   if (watchlist) return watchlist;
+
+  const telegram = await handleTelegram(request, env, url);
+  if (telegram) return telegram;
 
   return json({ error: "not_found" }, 404);
 }

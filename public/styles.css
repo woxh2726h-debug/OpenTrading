@@ -1184,6 +1184,120 @@ svg {
   color: var(--text-dim);
 }
 
+/* ------------------------------------------------- telegram notifications */
+
+.notify-card {
+  padding: 16px;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.notify-card h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.tg-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.tg-field input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.tg-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tg-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.tg-error {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--down);
+}
+
+.tg-steps {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tg-loading {
+  padding: 14px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.tg-bot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 13px;
+}
+
+.tg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--up);
+  box-shadow: 0 0 6px var(--up);
+  flex: none;
+}
+
+.tg-chat {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.tg-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tg-actions .btn {
+  flex: 1;
+}
+
+.tg-actions .btn.danger {
+  border-color: color-mix(in srgb, var(--down) 45%, var(--border));
+  color: var(--down);
+}
+
 .ind-list {
   display: flex;
   flex-direction: column;
