@@ -1498,7 +1498,7 @@ svg {
   min-width: 0;
   height: 28px;
   padding: 0 9px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
   color: var(--text);

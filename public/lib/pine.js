@@ -632,6 +632,7 @@ function createContext(candles, options) {
     sources,
     vars: new Map(),
     scalars: new Map(),
+    memo: new Map(),
     ta: new Map(),
     plots: new Map(),
     shapes: new Map(),
@@ -695,9 +696,29 @@ function toSeries(node, ctx) {
     }
   }
 
-  const value = evalNode(node, ctx);
-  if (value && value.__series) return value;
-  return { __scalar: scalarValue(value, ctx) };
+  if (node.type === "num" || node.type === "str") {
+    return { __scalar: node.value };
+  }
+
+  return memoSeries(node, ctx);
+}
+
+// Pine keeps history for every expression, not only for named variables.
+// ta.* sources such as math.abs(hist) must therefore be materialised bar by bar.
+function memoSeries(node, ctx) {
+  let state = ctx.memo.get(node.id);
+
+  if (!state) {
+    state = { values: [] };
+    ctx.memo.set(node.id, state);
+  }
+
+  if (state.values.length <= ctx.i) {
+    while (state.values.length < ctx.i) state.values.push(NaN);
+    state.values[ctx.i] = toNum(evalNode(node, ctx));
+  }
+
+  return { __series: state.values };
 }
 
 function nodePath(node) {
@@ -847,7 +868,7 @@ function evalCall(node, ctx) {
 
 function arg(node, index, key, ctx) {
   const target = node.named[key] || node.args[index];
-  return target ? evalNode(target, ctx) : undefined;
+  return target ? scalarValue(evalNode(target, ctx), ctx) : undefined;
 }
 
 function sourceArg(node, index, key, ctx) {
@@ -881,6 +902,7 @@ function plotState(ctx, node) {
     ctx.plots.set(node.id, plot);
   }
   while (plot.values.length <= ctx.i) plot.values.push(NaN);
+  while (plot.colors.length <= ctx.i) plot.colors.push("");
   return plot;
 }
 
@@ -913,7 +935,10 @@ function callPine(name, node, ctx) {
         typeof value === "boolean" ? (value ? 1 : 0) : Number.isFinite(value) ? value : NaN;
       plot.title = stringArg(node, 1, "title", ctx, plot.title) || plot.title;
       const color = arg(node, 2, "color", ctx);
-      if (typeof color === "string") plot.color = color;
+      if (typeof color === "string" && color) {
+        plot.color = color;
+        plot.colors[ctx.i] = color;
+      }
       const width = numberArg(node, 3, "linewidth", ctx, NaN);
       if (Number.isFinite(width)) plot.width = Math.max(1, Math.min(4, width));
       const style = stringArg(node, 4, "style", ctx, plot.style);
@@ -1503,6 +1528,7 @@ function collectPlots(ctx) {
       id: plot.id,
       title: plot.title || "plot",
       values,
+      colors: plot.colors.slice(0, ctx.n),
       color: plot.color,
       width: plot.width,
       style: plot.style,
