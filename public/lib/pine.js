@@ -77,6 +77,7 @@ export function runPine(program, candles, options = {}) {
     plots: ctx.error ? [] : collectPlots(ctx),
     shapes: ctx.error ? [] : collectShapes(ctx),
     hlines: ctx.error ? [] : [...ctx.hlines.values()],
+    alerts: ctx.error ? [] : collectAlerts(ctx),
   };
 }
 
@@ -637,6 +638,7 @@ function createContext(candles, options) {
     plots: new Map(),
     shapes: new Map(),
     hlines: new Map(),
+    alerts: new Map(),
     security: new Map(),
     symbol: options.symbol || "",
     interval: options.interval || "",
@@ -989,6 +991,19 @@ function callPine(name, node, ctx) {
       return price;
     }
 
+    case "alertcondition": {
+      let alert = ctx.alerts.get(node.id);
+      if (!alert) {
+        alert = { id: node.id, title: "", message: "", values: [] };
+        ctx.alerts.set(node.id, alert);
+      }
+      while (alert.values.length <= ctx.i) alert.values.push(false);
+      alert.values[ctx.i] = truthy(evalNode(node.args[0], ctx), ctx);
+      alert.title = stringArg(node, 1, "title", ctx, alert.title) || alert.title;
+      alert.message = stringArg(node, 2, "message", ctx, alert.message) || alert.message;
+      return alert.values[ctx.i] ? 1 : NaN;
+    }
+
     case "indicator":
     case "strategy":
     case "study":
@@ -996,7 +1011,6 @@ function callPine(name, node, ctx) {
     case "fill":
     case "bgcolor":
     case "barcolor":
-    case "alertcondition":
     case "alert":
     case "strategy.entry":
     case "strategy.exit":
@@ -1557,6 +1571,25 @@ function collectShapes(ctx) {
     });
   }
   return shapes;
+}
+
+function collectAlerts(ctx) {
+  const alerts = [];
+
+  for (const alert of ctx.alerts.values()) {
+    const values = new Array(ctx.n).fill(false);
+    for (let i = 0; i < ctx.n; i++) values[i] = Boolean(alert.values[i]);
+
+    alerts.push({
+      id: alert.id,
+      title: alert.title || "alert",
+      message: alert.message || "",
+      count: values.filter(Boolean).length,
+      values,
+    });
+  }
+
+  return alerts;
 }
 
 /* --------------------------------------------------------------- program */

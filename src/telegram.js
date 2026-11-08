@@ -38,6 +38,13 @@ async function ensureSchema(db) {
     )
     .run();
 
+  // Older rows were created before the send throttle existed.
+  try {
+    await db.prepare("ALTER TABLE tg_bots ADD COLUMN last_send_at INTEGER").run();
+  } catch {
+    // Column already exists.
+  }
+
   schemaReady = true;
 }
 
@@ -358,6 +365,60 @@ async function handleTest(request, env) {
   return json({ ok: true });
 }
 
+async function handleSend(request, env) {
+  const row = await readSession(request, env);
+  if (!row) return json({ error: "not_linked" }, 401);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "invalid_body" }, 400);
+  }
+
+  const text = String((body && body.text) || "").trim();
+  if (!text) return json({ error: "text_required" }, 400);
+  if (text.length > 3900) return json({ error: "text_too_long" }, 400);
+
+  // Telegram allows roughly 30 messages per second overall, but a human-facing
+  // alert stream should stay near one message per second. A tiny throttle is
+  // enough: the client already coalesces bursts before calling us.
+  const now = Date.now();
+  const last = Number(row.last_send_at || 0);
+  const wait = last + 1000 - now;
+  if (wait > 0) {
+    return json({ error: "too_fast", retry_after: Math.ceil(wait / 1000) }, 429, {
+      "retry-after": String(Math.ceil(wait / 1000)),
+    });
+  }
+
+  await env.DB.prepare("UPDATE tg_bots SET last_send_at = ? WHERE id = ?")
+    .bind(now, row.id)
+    .run();
+
+  const token = await decryptToken(env, row.token_enc);
+  const payload = { chat_id: row.chat_id, text, disable_web_page_preview: true };
+  if (body && body.markdown) payload.parse_mode = "HTML";
+
+  const result = await telegram(token, "sendMessage", payload);
+
+  if (!result.ok) {
+    const data = result.data || {};
+    const retryAfter = Number(data.parameters && data.parameters.retry_after);
+    const status = data.error_code === 429 ? 429 : 502;
+    return json(
+      {
+        error: data.error_code === 429 ? "rate_limited" : "send_failed",
+        description: data.description || "",
+        retry_after: Number.isFinite(retryAfter) ? retryAfter : undefined,
+      },
+      status,
+    );
+  }
+
+  return json({ ok: true, messageId: result.data.result && result.data.result.message_id });
+}
+
 async function handleHook(request, env, id) {
   const row = await env.DB.prepare("SELECT * FROM tg_bots WHERE id = ?").bind(id).first();
   if (!row) return json({ ok: true });
@@ -464,6 +525,7 @@ export async function handleTelegram(request, env, url) {
   if (path === "/api/telegram/status" && method === "GET") return handleStatus(env, url);
   if (path === "/api/telegram/unlink" && method === "POST") return handleUnlink(request, env);
   if (path === "/api/telegram/test" && method === "POST") return handleTest(request, env);
+  if (path === "/api/telegram/send" && method === "POST") return handleSend(request, env);
 
   if (path.startsWith("/api/telegram/hook/") && method === "POST") {
     return handleHook(request, env, path.slice("/api/telegram/hook/".length));

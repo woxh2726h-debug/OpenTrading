@@ -443,7 +443,85 @@
             <button class="btn" id="tgTestBtn" type="button">Тестовое сообщение</button>
             <button class="btn danger" id="tgUnlinkBtn" type="button">Отвязать</button>
           </div>
-          <p class="tg-note">Правила уведомлений появятся на следующем шаге.</p>
+          <div class="alert-block">
+            <div class="alert-head">
+              <span>Правила уведомлений</span>
+              <button class="btn small" id="alertAddBtn" type="button">+ Правило</button>
+            </div>
+            <div class="alert-list" id="alertList"></div>
+            <p class="tg-note">
+              Условие — из <code>alertcondition()</code> в Pine-скрипте. Проверка идёт, пока
+              открыта эта вкладка.
+            </p>
+          </div>
+
+          <form class="alert-form hidden" id="alertForm">
+            <div class="alert-form-head">
+              <b id="alertFormTitle">Новое правило</b>
+              <button class="icon-btn small" id="alertCancelBtn" type="button" aria-label="Отмена">×</button>
+            </div>
+
+            <label class="tg-field">
+              <span>Название</span>
+              <input id="alertName" type="text" maxlength="60" placeholder="Например: RSI перепродан" />
+            </label>
+
+            <label class="tg-field">
+              <span>Скрипт</span>
+              <select id="alertScript"></select>
+            </label>
+
+            <label class="tg-field">
+              <span>Событие</span>
+              <select id="alertEvent"></select>
+            </label>
+
+            <div class="alert-row">
+              <label class="tg-field">
+                <span>Символ</span>
+                <input id="alertSymbol" type="text" maxlength="20" placeholder="BTCUSDT" />
+              </label>
+              <label class="tg-field">
+                <span>Таймфрейм</span>
+                <select id="alertInterval"></select>
+              </label>
+            </div>
+
+            <label class="tg-field">
+              <span>Когда проверять</span>
+              <select id="alertMode">
+                <option value="close">На закрытии бара</option>
+                <option value="tick">Каждые N секунд</option>
+              </select>
+            </label>
+
+            <div class="alert-row">
+              <label class="tg-field">
+                <span>Проверка, сек</span>
+                <input id="alertEvery" type="number" min="5" max="3600" value="15" />
+              </label>
+              <label class="tg-field">
+                <span>Пауза, сек</span>
+                <input id="alertCooldown" type="number" min="0" max="86400" value="300" />
+              </label>
+            </div>
+
+            <label class="tg-field">
+              <span>Текст сообщения</span>
+              <textarea id="alertMessage" rows="3" spellcheck="false"></textarea>
+            </label>
+            <p class="tg-note">
+              Подстановки: {{symbol}} {{interval}} {{title}} {{message}} {{close}} {{open}}
+              {{high}} {{low}} {{volume}} {{time}}
+            </p>
+
+            <p class="tg-error hidden" id="alertError"></p>
+            <div class="alert-actions">
+              <button class="btn" id="alertPreviewBtn" type="button">Проверить на истории</button>
+              <button class="btn primary" id="alertSaveBtn" type="submit">Сохранить</button>
+            </div>
+            <div class="alert-history hidden" id="alertHistory"></div>
+          </form>
         </div>
 
         <button class="btn primary wide" id="closeNotify" type="button">Готово</button>

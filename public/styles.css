@@ -1298,6 +1298,187 @@ svg {
   color: var(--down);
 }
 
+/* ------------------------------------------------------- alert rules */
+
+.alert-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.alert-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.alert-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 12px;
+}
+
+.alert-item.off {
+  opacity: 0.55;
+}
+
+.alert-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.alert-item-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-item-meta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-item-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.alert-item-actions .icon-btn.small {
+  width: 24px;
+  height: 24px;
+}
+
+.alert-empty {
+  padding: 10px 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.alert-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.alert-form-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.alert-row {
+  display: flex;
+  gap: 8px;
+}
+
+.alert-row .tg-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.tg-field select,
+.tg-field textarea {
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.tg-field select {
+  height: 32px;
+}
+
+.tg-field textarea {
+  padding: 7px 8px;
+  resize: vertical;
+  min-height: 56px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.tg-field select:focus,
+.tg-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.alert-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.alert-actions .btn {
+  flex: 1;
+}
+
+.alert-history {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  font-size: 11px;
+}
+
+.alert-history-row {
+  display: flex;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+.alert-history-row time {
+  color: var(--text-dim);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-history-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-history-more {
+  color: var(--text-dim);
+}
+
 .ind-list {
   display: flex;
   flex-direction: column;

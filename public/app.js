@@ -99,6 +99,7 @@ async function boot() {
   cacheElements();
   loadSettings();
   loadPine();
+  startAlertEngine();
   applyTheme();
   applySidebarState();
   el.wlFilter.value = state.wlFilter;
@@ -124,6 +125,7 @@ async function boot() {
   refreshQuotes();
   window.setInterval(refreshQuotes, 15000);
   syncServerWatchlist();
+  refreshAlertLink();
 }
 
 function cacheElements() {
@@ -182,6 +184,24 @@ function cacheElements() {
     "tgChatId",
     "tgTestBtn",
     "tgUnlinkBtn",
+    "alertAddBtn",
+    "alertList",
+    "alertForm",
+    "alertFormTitle",
+    "alertCancelBtn",
+    "alertName",
+    "alertScript",
+    "alertEvent",
+    "alertSymbol",
+    "alertInterval",
+    "alertMode",
+    "alertEvery",
+    "alertCooldown",
+    "alertMessage",
+    "alertError",
+    "alertPreviewBtn",
+    "alertSaveBtn",
+    "alertHistory",
     "closeNotify",
     "pineBtn",
     "pineModal",
@@ -2238,6 +2258,8 @@ async function tgRequest(path, options) {
 function showLinkedBot(data) {
   el.tgBotName.textContent = data.botUsername ? `@${data.botUsername}` : "бот подключён";
   el.tgChatId.textContent = data.chatId ? `чат ${data.chatId}` : "";
+  alertState.linked = true;
+  renderAlertList();
   tgShow("linked");
 }
 
@@ -2250,6 +2272,8 @@ async function refreshTelegram() {
     return;
   }
 
+  alertState.linked = false;
+  renderAlertList();
   tgShow("unlinked");
 }
 
@@ -2339,11 +2363,618 @@ async function unlinkTelegram() {
   telegram.code = "";
   el.tgToken.value = "";
   tgShow("unlinked");
+  alertState.linked = false;
+  alertState.queue.length = 0;
+  renderAlertList();
   showToast("Бот отвязан");
 }
 
 function closeThemesModal() {
   el.themeModal.classList.add("hidden");
+}
+
+/* ---------------------------------------------------- alert rules engine */
+
+const ALERTS_KEY = "ot.alerts.v1";
+const ALERT_POLL_MS = 5000;
+const ALERT_HISTORY_LIMIT = 500;
+
+const alertState = {
+  rules: [],
+  runtime: new Map(),
+  cache: new Map(),
+  timer: 0,
+  busy: false,
+  linked: false,
+  queue: [],
+  sending: false,
+  editing: null,
+};
+
+function loadAlertRules() {
+  const saved = store.get(ALERTS_KEY, []);
+  const rules = [];
+  const seen = new Set();
+
+  if (Array.isArray(saved)) {
+    for (const raw of saved.slice(0, 200)) {
+      if (!raw || typeof raw !== "object") continue;
+      const rule = normalizeAlertRule(raw);
+      if (!rule || seen.has(rule.id)) continue;
+      seen.add(rule.id);
+      rules.push(rule);
+    }
+  }
+
+  alertState.rules = rules;
+}
+
+function saveAlertRules() {
+  store.set(ALERTS_KEY, alertState.rules);
+}
+
+function normalizeAlertRule(raw) {
+  const id = typeof raw.id === "string" && raw.id ? raw.id : "";
+  if (!id) return null;
+
+  const symbol = String(raw.symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const interval = TIMEFRAMES[raw.interval] ? raw.interval : "1m";
+  const mode = raw.mode === "tick" ? "tick" : "close";
+
+  return {
+    id,
+    name: String(raw.name || "Правило").slice(0, 60),
+    enabled: raw.enabled !== false,
+    scriptId: String(raw.scriptId || ""),
+    alertId: String(raw.alertId || "*"),
+    symbol: /^[A-Z0-9]{4,20}$/.test(symbol) ? symbol : "BTCUSDT",
+    interval,
+    mode,
+    everySec: clampInt(raw.everySec, 5, 3600, 15),
+    cooldownSec: clampInt(raw.cooldownSec, 0, 86400, 300),
+    message: String(raw.message || "").slice(0, 2000),
+  };
+}
+
+function clampInt(value, min, max, fallback) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function alertRuntime(rule) {
+  let runtime = alertState.runtime.get(rule.id);
+  if (!runtime) {
+    runtime = { nextAt: 0, lastBarTime: 0, lastSentAt: 0 };
+    alertState.runtime.set(rule.id, runtime);
+  }
+  return runtime;
+}
+
+function startAlertEngine() {
+  loadAlertRules();
+  renderAlertList();
+
+  if (alertState.timer) window.clearInterval(alertState.timer);
+
+  alertState.timer = window.setInterval(() => {
+    alertTick();
+  }, ALERT_POLL_MS);
+
+  window.setTimeout(alertTick, 1500);
+}
+
+async function alertTick() {
+  if (alertState.busy || !alertState.linked || !alertState.rules.length) return;
+
+  const now = Date.now();
+  const rule = alertState.rules.find(
+    (candidate) => candidate.enabled && now >= alertRuntime(candidate).nextAt,
+  );
+  if (!rule) return;
+
+  alertState.busy = true;
+  try {
+    await evaluateAlertRule(rule);
+  } catch (error) {
+    console.error("alert rule failed", error);
+  } finally {
+    alertState.busy = false;
+  }
+}
+
+async function evaluateAlertRule(rule) {
+  const runtime = alertRuntime(rule);
+  const everyMs = (rule.mode === "tick" ? rule.everySec : 15) * 1000;
+  runtime.nextAt = Date.now() + everyMs;
+
+  const script = pine.scripts.find((candidate) => candidate.id === rule.scriptId);
+  if (!script) return;
+
+  const candles = await fetchAlertCandles(rule);
+  if (candles.length < 3) return;
+
+  const condition = runAlertCondition(script, rule, candles);
+  if (!condition) return;
+
+  const index = rule.mode === "close" ? candles.length - 2 : candles.length - 1;
+  if (!condition.values[index]) return;
+
+  const candle = candles[index];
+  if (runtime.lastBarTime === candle.time) return;
+
+  // Mark the bar as seen even when the cooldown suppresses it: an alert should
+  // not fire later just because the user waited out the pause.
+  runtime.lastBarTime = candle.time;
+
+  if (Date.now() - runtime.lastSentAt < rule.cooldownSec * 1000) return;
+
+  runtime.lastSentAt = Date.now();
+  await enqueueAlert(alertMessageText(rule, condition, candle));
+}
+
+async function fetchAlertCandles(rule, fresh) {
+  const key = `${rule.symbol}|${rule.interval}`;
+  const now = Date.now();
+  const cached = alertState.cache.get(key);
+
+  if (!fresh && cached && now - cached.at < 8000) return cached.candles;
+
+  try {
+    const data = await getJson(
+      `/api/history?symbol=${encodeURIComponent(rule.symbol)}&interval=${encodeURIComponent(rule.interval)}&limit=${ALERT_HISTORY_LIMIT}`,
+    );
+
+    if (!data || !Array.isArray(data.candles) || data.candles.length < 3) return [];
+
+    const candles = data.candles.map(normalizeCandle);
+    alertState.cache.set(key, { at: now, candles });
+    return candles;
+  } catch {
+    return [];
+  }
+}
+
+function runAlertCondition(script, rule, candles) {
+  const compiled = compilePine(script.code || "");
+  if (!compiled.ok) return null;
+
+  const result = runPine(compiled.program, candles, {
+    symbol: rule.symbol,
+    interval: rule.interval,
+  });
+
+  const alerts = Array.isArray(result.alerts) ? result.alerts : [];
+  if (!alerts.length) return null;
+
+  if (!rule.alertId || rule.alertId === "*") {
+    const values = new Array(candles.length).fill(false);
+    for (const alert of alerts) {
+      for (let i = 0; i < values.length; i += 1) {
+        if (alert.values[i]) values[i] = true;
+      }
+    }
+    return {
+      title: alerts.map((alert) => alert.title).filter(Boolean).join(" / ") || "сигнал",
+      message: alerts[0].message || "",
+      values,
+    };
+  }
+
+  return alerts.find((alert) => String(alert.id) === rule.alertId) || null;
+}
+
+function alertNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  if (Math.abs(number) >= 1000) return number.toFixed(2);
+  if (Math.abs(number) >= 1) return number.toFixed(3);
+  return number.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function alertStamp(time) {
+  try {
+    return new Date(time * 1000).toLocaleString("ru-RU", { hour12: false });
+  } catch {
+    return String(time);
+  }
+}
+
+function alertMessageText(rule, condition, candle) {
+  const replacements = {
+    symbol: rule.symbol,
+    interval: rule.interval,
+    title: condition.title || rule.name,
+    message: condition.message || "",
+    close: alertNumber(candle.close),
+    open: alertNumber(candle.open),
+    high: alertNumber(candle.high),
+    low: alertNumber(candle.low),
+    volume: alertNumber(candle.volume),
+    time: alertStamp(candle.time),
+  };
+
+  const template = rule.message || "{{symbol}} {{interval}} — {{title}}";
+  return template
+    .replace(/\{\{\s*(\w+)\s*\}\}/g, (match, key) =>
+      Object.prototype.hasOwnProperty.call(replacements, key) ? String(replacements[key]) : match,
+    )
+    .slice(0, 3900);
+}
+
+function alertSleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+// One queue per bot: the Worker throttles to ~1 message/second, so bursts are
+// sent one by one and rate-limit answers simply postpone the next attempt.
+async function enqueueAlert(text) {
+  alertState.queue.push(text);
+  if (alertState.sending) return;
+
+  alertState.sending = true;
+
+  while (alertState.queue.length) {
+    const next = alertState.queue[0];
+    const { ok, data } = await tgRequest("/api/telegram/send", {
+      method: "POST",
+      body: JSON.stringify({ text: next }),
+    });
+
+    if (ok) {
+      alertState.queue.shift();
+      await alertSleep(1100);
+      continue;
+    }
+
+    if (data.error === "not_linked") {
+      alertState.linked = false;
+      alertState.queue.length = 0;
+      break;
+    }
+
+    if (data.error === "too_fast" || data.error === "rate_limited") {
+      const wait = Math.max(1, Number(data.retry_after) || 1);
+      await alertSleep(wait * 1000);
+      continue;
+    }
+
+    alertState.queue.shift();
+  }
+
+  alertState.sending = false;
+}
+
+function alertRuleMeta(rule) {
+  const script = pine.scripts.find((candidate) => candidate.id === rule.scriptId);
+  const parts = [rule.symbol, rule.interval];
+
+  if (script) parts.push(script.name);
+
+  if (rule.alertId && rule.alertId !== "*") {
+    const alert = alertConditionList(script).find((item) => item.id === rule.alertId);
+    parts.push(alert ? alert.title : "событие");
+  } else {
+    parts.push("любое событие");
+  }
+
+  parts.push(rule.mode === "close" ? "на закрытии бара" : `каждые ${rule.everySec} с`);
+  return parts.join(" · ");
+}
+
+function renderAlertList() {
+  if (!el.alertList) return;
+
+  el.alertList.innerHTML = "";
+
+  if (!alertState.rules.length) {
+    const empty = document.createElement("p");
+    empty.className = "alert-empty";
+    empty.textContent = "Правил пока нет — добавьте первое.";
+    el.alertList.appendChild(empty);
+    return;
+  }
+
+  for (const rule of alertState.rules) {
+    const item = document.createElement("div");
+    item.className = "alert-item" + (rule.enabled ? "" : " off");
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = rule.enabled;
+    toggle.title = "Включить правило";
+    toggle.addEventListener("change", () => {
+      rule.enabled = toggle.checked;
+      alertRuntime(rule).nextAt = 0;
+      saveAlertRules();
+      renderAlertList();
+    });
+
+    const main = document.createElement("div");
+    main.className = "alert-item-main";
+
+    const name = document.createElement("div");
+    name.className = "alert-item-name";
+    name.textContent = rule.name;
+
+    const meta = document.createElement("div");
+    meta.className = "alert-item-meta";
+    meta.textContent = alertRuleMeta(rule);
+
+    main.append(name, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "alert-item-actions";
+
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "icon-btn small";
+    edit.title = "Изменить";
+    edit.textContent = "✎";
+    edit.addEventListener("click", () => openAlertForm(rule.id));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-btn small danger";
+    remove.title = "Удалить";
+    remove.textContent = "×";
+    remove.addEventListener("click", () => deleteAlertRule(rule.id));
+
+    actions.append(edit, remove);
+    item.append(toggle, main, actions);
+    el.alertList.appendChild(item);
+  }
+}
+
+function alertConditionList(script) {
+  if (!script) return [];
+
+  const compiled = compilePine(script.code || "");
+  if (!compiled.ok) return [];
+
+  const candles = state.candles.length > 2 ? state.candles : [];
+  if (!candles.length) return [];
+
+  const result = runPine(compiled.program, candles, {
+    symbol: state.symbol,
+    interval: state.interval,
+  });
+
+  return (result.alerts || []).map((alert) => ({
+    id: String(alert.id),
+    title: alert.title || `условие ${alert.id}`,
+  }));
+}
+
+function closeAlertForm() {
+  alertState.editing = null;
+  el.alertForm.classList.add("hidden");
+  el.alertHistory.classList.add("hidden");
+  el.alertError.classList.add("hidden");
+}
+
+function openAlertForm(id) {
+  const rule = id ? alertState.rules.find((candidate) => candidate.id === id) : null;
+  alertState.editing = rule ? rule.id : null;
+
+  if (!pine.scripts.length) {
+    showToast("Сначала создайте Pine-скрипт");
+    return;
+  }
+
+  el.alertFormTitle.textContent = rule ? "Изменить правило" : "Новое правило";
+  el.alertName.value = rule ? rule.name : "";
+
+  fillAlertScripts(rule ? rule.scriptId : pine.scripts[0].id);
+  fillAlertEvents(rule ? rule.alertId : "*");
+
+  el.alertSymbol.value = rule ? rule.symbol : state.symbol;
+  fillAlertIntervals(rule ? rule.interval : state.interval);
+  el.alertMode.value = rule ? rule.mode : "close";
+  el.alertEvery.value = String(rule ? rule.everySec : 15);
+  el.alertEvery.disabled = (rule ? rule.mode : "close") !== "tick";
+  el.alertCooldown.value = String(rule ? rule.cooldownSec : 300);
+  el.alertMessage.value = rule
+    ? rule.message
+    : "🔔 {{symbol}} {{interval}}\n{{title}}\nЦена: {{close}}\n{{time}}";
+
+  el.alertError.classList.add("hidden");
+  el.alertHistory.classList.add("hidden");
+  el.alertForm.classList.remove("hidden");
+  el.alertName.focus();
+}
+
+function fillAlertScripts(selected) {
+  el.alertScript.innerHTML = "";
+
+  for (const script of pine.scripts) {
+    const option = document.createElement("option");
+    option.value = script.id;
+    option.textContent = script.name;
+    el.alertScript.appendChild(option);
+  }
+
+  const wanted = pine.scripts.some((script) => script.id === selected)
+    ? selected
+    : pine.scripts[0] && pine.scripts[0].id;
+
+  if (wanted) el.alertScript.value = wanted;
+}
+
+function fillAlertEvents(selected) {
+  const script = pine.scripts.find((candidate) => candidate.id === el.alertScript.value);
+  const conditions = alertConditionList(script);
+
+  el.alertEvent.innerHTML = "";
+
+  const any = document.createElement("option");
+  any.value = "*";
+  any.textContent = "Любое событие скрипта";
+  el.alertEvent.appendChild(any);
+
+  for (const condition of conditions) {
+    const option = document.createElement("option");
+    option.value = condition.id;
+    option.textContent = condition.title;
+    el.alertEvent.appendChild(option);
+  }
+
+  const wanted = conditions.some((condition) => condition.id === selected) ? selected : "*";
+  el.alertEvent.value = wanted;
+}
+
+function fillAlertIntervals(selected) {
+  el.alertInterval.innerHTML = "";
+
+  for (const [id, label] of Object.entries(TIMEFRAMES)) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label;
+    el.alertInterval.appendChild(option);
+  }
+
+  el.alertInterval.value = TIMEFRAMES[selected] ? selected : "1m";
+}
+
+function readAlertForm() {
+  const name = el.alertName.value.trim().slice(0, 60) || "Правило";
+  const symbol = el.alertSymbol.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  if (!/^[A-Z0-9]{4,20}$/.test(symbol)) {
+    el.alertError.textContent = "Символ должен быть вида BTCUSDT.";
+    el.alertError.classList.remove("hidden");
+    return null;
+  }
+
+  if (!el.alertScript.value) {
+    el.alertError.textContent = "Нет доступного Pine-скрипта.";
+    el.alertError.classList.remove("hidden");
+    return null;
+  }
+
+  el.alertError.classList.add("hidden");
+
+  return {
+    id: alertState.editing || `a_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    name,
+    enabled: true,
+    scriptId: el.alertScript.value,
+    alertId: el.alertEvent.value || "*",
+    symbol,
+    interval: el.alertInterval.value,
+    mode: el.alertMode.value === "tick" ? "tick" : "close",
+    everySec: clampInt(el.alertEvery.value, 5, 3600, 15),
+    cooldownSec: clampInt(el.alertCooldown.value, 0, 86400, 300),
+    message: el.alertMessage.value.slice(0, 2000),
+  };
+}
+
+function saveAlertForm(event) {
+  if (event) event.preventDefault();
+
+  const rule = readAlertForm();
+  if (!rule) return;
+
+  const existing = alertState.rules.find((candidate) => candidate.id === rule.id);
+
+  if (existing) {
+    Object.assign(existing, rule);
+    if (!existing.enabled) existing.enabled = true;
+  } else {
+    alertState.rules.push(rule);
+  }
+
+  alertRuntime(rule).nextAt = 0;
+  saveAlertRules();
+  renderAlertList();
+  closeAlertForm();
+  showToast("Правило сохранено");
+  alertTick();
+}
+
+function deleteAlertRule(id) {
+  const rule = alertState.rules.find((candidate) => candidate.id === id);
+  if (!rule) return;
+
+  if (!window.confirm(`Удалить правило «${rule.name}»?`)) return;
+
+  alertState.rules = alertState.rules.filter((candidate) => candidate.id !== id);
+  alertState.runtime.delete(id);
+  saveAlertRules();
+  renderAlertList();
+
+  if (alertState.editing === id) closeAlertForm();
+}
+
+async function previewAlertRule() {
+  const rule = readAlertForm();
+  if (!rule) return;
+
+  const script = pine.scripts.find((candidate) => candidate.id === rule.scriptId);
+  if (!script) return;
+
+  el.alertHistory.classList.remove("hidden");
+  el.alertHistory.textContent = "Считаем по истории…";
+
+  const candles = await fetchAlertCandles(rule, true);
+  if (candles.length < 3) {
+    el.alertHistory.textContent = "Нет данных по этому символу и таймфрейму.";
+    return;
+  }
+
+  const condition = runAlertCondition(script, rule, candles);
+  if (!condition) {
+    el.alertHistory.textContent =
+      "В скрипте не найдено alertcondition() или условие не вычисляется.";
+    return;
+  }
+
+  const cooldown = rule.cooldownSec * 1000;
+  const limit = rule.mode === "close" ? candles.length - 1 : candles.length;
+  const hits = [];
+  let lastSent = -Infinity;
+
+  for (let i = 1; i < limit; i += 1) {
+    if (!condition.values[i]) continue;
+
+    const at = candles[i].time * 1000;
+    if (at - lastSent < cooldown) continue;
+
+    lastSent = at;
+    hits.push({ candle: candles[i], text: alertMessageText(rule, condition, candles[i]) });
+  }
+
+  el.alertHistory.innerHTML = "";
+
+  const summary = document.createElement("p");
+  summary.className = "alert-history-more";
+  summary.textContent = hits.length
+    ? `Срабатываний: ${hits.length}. Последние ${Math.min(hits.length, 20)}:`
+    : "На этой истории условие не срабатывало ни разу.";
+  el.alertHistory.appendChild(summary);
+
+  for (const hit of hits.slice(-20).reverse()) {
+    const row = document.createElement("div");
+    row.className = "alert-history-row";
+
+    const time = document.createElement("time");
+    time.textContent = alertStamp(hit.candle.time);
+
+    const text = document.createElement("span");
+    text.textContent = hit.text.replace(/\s+/g, " ");
+    text.title = hit.text;
+
+    row.append(time, text);
+    el.alertHistory.appendChild(row);
+  }
+}
+
+async function refreshAlertLink() {
+  const { data } = await tgRequest("/api/telegram/session");
+  alertState.linked = Boolean(data && data.linked);
+  renderAlertList();
+  if (alertState.linked) alertTick();
+  return alertState.linked;
 }
 
 /* ------------------------------------------------------------ pine editor */
@@ -3122,6 +3753,16 @@ function bindUi() {
     el.tgUnlinkBtn.addEventListener("click", unlinkTelegram);
     el.tgToken.addEventListener("keydown", (event) => {
       if (event.key === "Enter") connectTelegram();
+    });
+
+    el.alertAddBtn.addEventListener("click", () => openAlertForm(""));
+    el.alertForm.addEventListener("submit", saveAlertForm);
+    el.alertCancelBtn.addEventListener("click", closeAlertForm);
+    el.alertPreviewBtn.addEventListener("click", previewAlertRule);
+    el.alertScript.addEventListener("change", () => fillAlertEvents("*"));
+    el.alertMode.addEventListener("change", () => {
+      const tick = el.alertMode.value === "tick";
+      el.alertEvery.disabled = !tick;
     });
   }
   el.themeModal.addEventListener("click", (event) => {
